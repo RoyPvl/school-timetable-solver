@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.pyright/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+build/
+dist/
+
+# Agent and editor local state
+.serena/
+**/.serena/
+.codex/
+**/.codex/
+.cursor/
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Excel temporary files
+~$*.xlsx
+~$*.xlsm
+
+# Generated outputs and logs
+projects/*/output/*
+!projects/*/output/.gitkeep
+*.log
