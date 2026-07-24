@@ -7,7 +7,6 @@ from itertools import pairwise
 from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.solver_context import SolverContext
-from school_timetable_solver.model.solver_models import CandidateSlotModel
 
 
 class RequiredLessonCountConstraint:
@@ -16,43 +15,18 @@ class RequiredLessonCountConstraint:
     rule_id = "H06"
 
     def apply(self, context: SolverContext) -> None:
-        variables_by_requirement: dict[str, list[cp_model.IntVar]] = defaultdict(list)
+        groups: dict[str, list[cp_model.IntVar]] = defaultdict(list)
         for candidate in context.candidates:
-            variables_by_requirement[candidate.requirement_id].append(
+            groups[candidate.requirement_id].append(
                 context.assignment_variables[candidate.candidate_id]
             )
         for requirement_id, required_count in context.required_counts.items():
-            context.model.add(sum(variables_by_requirement[requirement_id]) == required_count)
-        context.applied_rule_ids.append(self.rule_id)
-
-
-class FixedLessonConstraint:
-    """H12: force every fixed lesson onto its specified assignment."""
-
-    rule_id = "H12"
-
-    def apply(self, context: SolverContext) -> None:
-        for fixed in context.fixed_lessons:
-            variables = [
-                context.assignment_variables[candidate.candidate_id]
-                for candidate in context.candidates
-                if candidate.requirement_id == fixed.requirement_id
-                and candidate.target_date == fixed.target_date
-                and candidate.period_id == fixed.period_id
-                and candidate.teacher_id == fixed.teacher_id
-                and candidate.room_id == fixed.room_id
-                and candidate.class_id == fixed.class_id
-                and candidate.subject_id == fixed.subject_id
-            ]
-            if variables:
-                context.model.add(sum(variables) == 1)
-            else:
-                context.model.add_bool_or([])
+            context.model.add(sum(groups[requirement_id]) == required_count)
         context.applied_rule_ids.append(self.rule_id)
 
 
 class TeacherOverlapConstraint:
-    """H01: prohibit simultaneous lessons for the same teacher."""
+    """H01: prohibit simultaneous lessons for one teacher."""
 
     rule_id = "H01"
 
@@ -68,7 +42,7 @@ class TeacherOverlapConstraint:
 
 
 class ClassOverlapConstraint:
-    """H02: prohibit simultaneous lessons for the same class."""
+    """H02: prohibit simultaneous lessons for one class."""
 
     rule_id = "H02"
 
@@ -84,7 +58,7 @@ class ClassOverlapConstraint:
 
 
 class RoomOverlapConstraint:
-    """H03: prohibit simultaneous lessons in the same room."""
+    """H03: prohibit simultaneous lessons in one room."""
 
     rule_id = "H03"
 
@@ -100,7 +74,7 @@ class RoomOverlapConstraint:
 
 
 class ClassDailyLimitConstraint:
-    """H07: enforce class and per-requirement daily hard limits."""
+    """H07: enforce class and requirement daily limits."""
 
     rule_id = "H07"
 
@@ -115,7 +89,7 @@ class ClassDailyLimitConstraint:
             limit = context.class_daily_limits[key]
             if limit is not None:
                 context.model.add(sum(variables) <= limit)
-        for (requirement_id, _target_date), variables in requirement_groups.items():
+        for (requirement_id, _), variables in requirement_groups.items():
             limit = context.requirement_daily_limits[requirement_id]
             if limit is not None:
                 context.model.add(sum(variables) <= limit)
@@ -123,7 +97,7 @@ class ClassDailyLimitConstraint:
 
 
 class TeacherDailyLimitConstraint:
-    """H08: enforce each teacher's resolved daily hard limit."""
+    """H08: enforce each teacher's resolved daily limit."""
 
     rule_id = "H08"
 
@@ -141,7 +115,7 @@ class TeacherDailyLimitConstraint:
 
 
 class TeacherConsecutivePeriodConstraint:
-    """H09: enforce the maximum consecutive period count for each teacher."""
+    """H09: enforce each teacher's maximum consecutive period count."""
 
     rule_id = "H09"
 
@@ -155,8 +129,7 @@ class TeacherConsecutivePeriodConstraint:
             period_id
             for period_id, _ in sorted(context.period_orders.items(), key=lambda item: item[1])
         ]
-        teacher_dates = {(key[0], key[1]) for key in groups}
-        for teacher_id, target_date in teacher_dates:
+        for teacher_id, target_date in {(key[0], key[1]) for key in groups}:
             limit = context.teacher_consecutive_limits[(teacher_id, target_date)]
             if limit is None or limit >= len(ordered_periods):
                 continue
@@ -164,14 +137,14 @@ class TeacherConsecutivePeriodConstraint:
                 variables = [
                     variable
                     for period_id in ordered_periods[start : start + limit + 1]
-                    for variable in groups.get((teacher_id, target_date, period_id), [])
+                    for variable in groups.get((teacher_id, target_date, period_id), ())
                 ]
                 context.model.add(sum(variables) <= limit)
         context.applied_rule_ids.append(self.rule_id)
 
 
 class ConsecutiveAttendanceConstraint:
-    """H10: enforce the maximum streak of calendar-day attendance per class."""
+    """H10: enforce each class's maximum consecutive calendar-day attendance."""
 
     rule_id = "H10"
 
@@ -189,7 +162,7 @@ class ConsecutiveAttendanceConstraint:
                     f"class_day__{class_id}__{target_date.isoformat()}"
                 )
                 context.class_day_variables[key] = day_variable
-                variables = groups.get(key, [])
+                variables = groups.get(key, ())
                 if variables:
                     context.model.add_max_equality(day_variable, variables)
                 else:
@@ -204,47 +177,36 @@ class ConsecutiveAttendanceConstraint:
                 if any(right - left != timedelta(days=1) for left, right in pairwise(window)):
                     continue
                 context.model.add(
-                    sum(
-                        context.class_day_variables[(class_id, target_date)]
-                        for target_date in window
-                    )
-                    <= limit
+                    sum(context.class_day_variables[(class_id, day)] for day in window) <= limit
                 )
         context.applied_rule_ids.append(self.rule_id)
 
 
-class CampusTransferConstraint:
-    """H11: require enough empty periods between different-campus assignments."""
+class TeacherSingleCampusPerDayConstraint:
+    """H11: allow each teacher to work at at most one campus per date."""
 
     rule_id = "H11"
 
     def apply(self, context: SolverContext) -> None:
-        groups: dict[tuple[str, date], list[CandidateSlotModel]] = defaultdict(list)
+        campus_groups: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
         for candidate in context.candidates:
-            groups[(candidate.teacher_id, candidate.target_date)].append(candidate)
-        for (teacher_id, _target_date), candidates in groups.items():
-            can_transfer = context.teacher_can_transfer[teacher_id]
-            gap = context.teacher_transfer_gaps[teacher_id]
-            for index, left in enumerate(candidates):
-                for right in candidates[index + 1 :]:
-                    if left.campus_id == right.campus_id:
-                        continue
-                    period_distance = abs(
-                        context.period_orders[left.period_id]
-                        - context.period_orders[right.period_id]
-                    )
-                    if not can_transfer or period_distance - 1 < gap:
-                        context.model.add(
-                            context.assignment_variables[left.candidate_id]
-                            + context.assignment_variables[right.candidate_id]
-                            <= 1
-                        )
+            campus_groups[
+                (candidate.teacher_id, candidate.target_date, candidate.campus_id)
+            ].append(context.assignment_variables[candidate.candidate_id])
+        campus_day_variables: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        for (teacher_id, target_date, campus_id), variables in campus_groups.items():
+            campus_variable = context.model.new_bool_var(
+                f"teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
+            )
+            context.model.add_max_equality(campus_variable, variables)
+            campus_day_variables[(teacher_id, target_date)].append(campus_variable)
+        for variables in campus_day_variables.values():
+            context.model.add(sum(variables) <= 1)
         context.applied_rule_ids.append(self.rule_id)
 
 
 DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
-    FixedLessonConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
     RoomOverlapConstraint(),
@@ -252,12 +214,11 @@ DEFAULT_HARD_CONSTRAINTS = (
     TeacherDailyLimitConstraint(),
     TeacherConsecutivePeriodConstraint(),
     ConsecutiveAttendanceConstraint(),
-    CampusTransferConstraint(),
+    TeacherSingleCampusPerDayConstraint(),
 )
 
 HardConstraint = (
     RequiredLessonCountConstraint
-    | FixedLessonConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
     | RoomOverlapConstraint
@@ -265,5 +226,5 @@ HardConstraint = (
     | TeacherDailyLimitConstraint
     | TeacherConsecutivePeriodConstraint
     | ConsecutiveAttendanceConstraint
-    | CampusTransferConstraint
+    | TeacherSingleCampusPerDayConstraint
 )

@@ -89,5 +89,15 @@ def test_internal_import_graph_has_no_cycle() -> None:
 def test_hard_constraint_registration_has_unique_formal_rule_ids() -> None:
     rule_ids = [constraint.rule_id for constraint in DEFAULT_HARD_CONSTRAINTS]
     assert len(rule_ids) == len(set(rule_ids))
-    assert set(rule_ids) == {"H01", "H02", "H03", "H06", "H07", "H08", "H09", "H10", "H11", "H12"}
+    assert set(rule_ids) == {
+        "H01",
+        "H02",
+        "H03",
+        "H06",
+        "H07",
+        "H08",
+        "H09",
+        "H10",
+        "H11",
+    }
     assert all(callable(constraint.apply) for constraint in DEFAULT_HARD_CONSTRAINTS)

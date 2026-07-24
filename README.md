@@ -1,19 +1,19 @@
 # school-timetable-solver
 
-Excelで管理する校舎、教室、教師、クラス、教科、開講日、授業要求、勤務情報、固定授業、配置ルールを読み込み、Google OR-Tools CP-SATで制約を満たす時間割を生成するローカルCLIです。
+Excelで管理する開講日、時限、校舎、教室、教師、クラス、教科、授業要求、教師勤務、配置ルールを読み込み、Google OR-Tools CP-SATでHard Constraintを満たす時間割を生成するローカルCLIです。
 
-## Ver.1の対象範囲
+## PoCの対象範囲
 
-- `validate_only`による入力形式・参照・固定授業・ルール競合・明白な供給不足の検証
+- 入力契約v0.1の13シートExcel
+- `validate_only`による形式・参照・ルール解決・明白な供給不足の検証
 - `strict`による全必要授業数を満たす時間割生成
-- 固定授業、教師・クラス・教室重複、カレンダー、勤務可否、許可時限、日別上限、連続コマ、連続登校、校舎移動のHard Constraint
+- 教師・クラス・教室重複、必要コマ数、日別上限、連続時限、連続登校、同日単一校舎のHard Constraint
+- カレンダー、教師勤務、クラス許可時限、教室所属校舎のCandidate事前除外
 - OR-Toolsとは独立した結果検証
-- 全体、教師別、クラス別、集計、検証、実行条件、未配置を含むExcel出力
+- `全体`1シートの日付別時間割マトリクス出力
 - テキスト実行ログ
 
-## Ver.1の対象外
-
-Soft Constraintの最適化、本格的な`diagnostic`、Unsat Core、合同授業、複数教師授業、複数時限連続授業、生徒別時間割、教室定員、Web画面、外部API、PyInstaller、実行ファイル、`.bat`、デプロイ、CIは対象外です。`diagnostic`が入力された場合は入力エラーになります。
+固定授業、代替担当教師、複数担当教師、条件付き校舎移動、Soft Constraint、`diagnostic`、Unsat Core、教師別・クラス別・集計・検証結果等の補助Worksheet、GUI、実行ファイル化、デプロイ、CIはPoC対象外です。
 
 ## 必要環境
 
@@ -32,10 +32,46 @@ uv sync
 uv run python -m school_timetable_solver.main \
   --input projects/sample/input/時間割入力_サンプル.xlsx \
   --output projects/sample/output/時間割生成結果_サンプル.xlsx \
-  --log projects/sample/output/時間割生成_サンプル.log
+  --log projects/sample/output/時間割生成_サンプル.log \
+  --mode strict \
+  --max-solve-seconds 60 \
+  --random-seed 1
 ```
 
-入力は`projects/sample/input/時間割入力_サンプル.xlsx`、出力は`projects/sample/output/`に作成されます。生成結果とログはGit管理対象外です。
+CLI引数:
+
+| 引数 | 内容 | Default |
+|---|---|---:|
+| `--input` | 入力Excel | 必須 |
+| `--output` | 出力Excel | 必須 |
+| `--log` | 実行ログ | 任意 |
+| `--mode` | `strict` / `validate_only` | `strict` |
+| `--max-solve-seconds` | 正の実数 | `60.0` |
+| `--random-seed` | 0以上の整数 | `1` |
+
+`validate_only`ではSolverを実行せず、時間割Excelも生成しません。入力エラー、候補不足、解なし、結果検証エラー時にも出力Excelを生成・置換しません。
+
+## 入力・出力
+
+入力Workbookは次の13シートです。
+
+```text
+00_操作説明
+01_基本設定
+02_開講カレンダー
+03_時限
+04_校舎
+05_教室
+06_教師
+07_クラス
+08_教科
+09_授業要求
+10_教師勤務
+11_配置ルール
+12_選好設定
+```
+
+出力Workbookは`全体`シート1枚だけを持ちます。出力対象日を日付昇順に1行2日ずつ配置し、各日を校舎・教室列、6時限×クラス・教科・担当行のマトリクスで表示します。
 
 ## 品質チェック
 
@@ -51,24 +87,18 @@ uv run pytest
 | Code | Meaning |
 |---:|---|
 | 0 | 入力検証成功、またはstrict生成成功 |
-| 1 | 予期しないアプリケーションエラー、またはMODEL_INVALID |
-| 2 | 入力形式・入力整合性・候補不足エラー |
-| 3 | strict生成で解なし、または制限時間内に解なし |
-| 4 | 独立した生成結果検証エラー |
+| 1 | 予期しない内部エラー、Solverの予期しない状態 |
+| 2 | 入力形式・入力整合性・ルール解決・候補不足エラー |
+| 3 | strict生成で`INFEASIBLE`または`UNKNOWN` |
+| 4 | 独立結果検証またはDocument構築エラー |
 
 ## 設計文書
 
-- `docs/要件定義書_v0.1_school-timetable-solver.md`
-- `docs/アーキテクチャ設計書_v0.2_school-timetable-solver.md`
-- `docs/基本設計書_v0.1_school-timetable-solver.md`
-- `docs/コーディング規約_v0.1_school-timetable-solver.md`
+- [入力契約設計書 v0.1](docs/入力契約設計書_v0.1_school-timetable-solver.md)
+- [出力契約設計書 v0.1](docs/出力契約設計書_v0.1_school-timetable-solver.md)
+- [要件定義書 v0.1](docs/要件定義書_v0.1_school-timetable-solver.md)
+- [アーキテクチャ設計書 v0.2](docs/アーキテクチャ設計書_v0.2_school-timetable-solver.md)
+- [基本設計書 v0.1](docs/基本設計書_v0.1_school-timetable-solver.md)
+- [コーディング規約 v0.1](docs/コーディング規約_v0.1_school-timetable-solver.md)
 
-実装はCodex実装指示書、要件定義書、アーキテクチャ設計書v0.2、基本設計書、コーディング規約の順で解釈しています。物理配置はアーキテクチャ設計書v0.2の中粒度構成を優先します。
-
-## 現時点の前提と制限
-
-- `10_教師勤務`に対象教師・日付・時限の行がない場合は勤務不可として扱います。曖昧な推測補完を避けるためです。
-- 基本設計書に日付・時限別教室可否の列定義がないため、Ver.1のH14は`05_教室.enabled`とクラス所属校舎との一致で判定します。
-- `05_教室`、`08_教科`、`11_固定授業`の詳細列は基本設計書に完全な表がないため、ID参照とVer.1制約に必要な最小列を採用しています。テンプレートの列見出しを正として利用してください。
-- `allow_consecutive`は入力として保持しますが、要件定義書の正式Hard Constraint一覧に独立ルールがないためVer.1では制約化しません。
-- 出力はVer.1用の一覧形式で、既存帳票との完全な書式一致や印刷レイアウト最適化は行いません。
+実装は、作業中の修正指示、入力契約、出力契約、アーキテクチャv0.2、要件定義、基本設計、コーディング規約の順で解釈します。入出力契約と競合する旧15シート、固定授業、条件付き移動、一覧形式出力の記述は適用しません。

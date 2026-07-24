@@ -6,10 +6,8 @@ import pytest
 
 from school_timetable_solver.model.input_models import (
     CalendarDayModel,
-    FixedLessonModel,
-    GenerationMode,
-    GenerationSettingsModel,
     InputDataModel,
+    InputWorkbookSettingsModel,
     LessonRequirementModel,
     PlacementRuleModel,
     TeacherAvailabilityModel,
@@ -26,67 +24,139 @@ from school_timetable_solver.model.master_models import (
 
 @pytest.fixture
 def minimal_input_data() -> InputDataModel:
-    dates = (date(2026, 7, 27), date(2026, 7, 28))
-    periods = (
-        PeriodModel("P1", "1限", 1, time(9), time(10)),
-        PeriodModel("P2", "2限", 2, time(10, 10), time(11, 10)),
-        PeriodModel("P3", "3限", 3, time(11, 20), time(12, 20)),
+    output_dates = (date(2026, 7, 27), date(2026, 7, 28), date(2026, 7, 29))
+    periods = tuple(
+        PeriodModel(
+            f"P{order}",
+            chr(0x2460 + order - 1),
+            order,
+            time(8 + order, 0),
+            time(9 + order, 0),
+        )
+        for order in range(1, 7)
     )
     return InputDataModel(
-        settings=GenerationSettingsModel(
-            2026, "test", dates[0], dates[-1], GenerationMode.STRICT, 5.0, 1
-        ),
-        calendar_days=tuple(
-            CalendarDayModel(target, weekday, True, ("P1", "P2", "P3"), "normal", None)
-            for target, weekday in zip(dates, ("月", "火"), strict=True)
+        settings=InputWorkbookSettingsModel("0.1", "テスト時間割", None),
+        calendar_days=(
+            CalendarDayModel(
+                output_dates[0], True, tuple(item.period_id for item in periods), None
+            ),
+            CalendarDayModel(
+                output_dates[1], True, tuple(item.period_id for item in periods), None
+            ),
+            CalendarDayModel(output_dates[2], True, (), "授業なし日"),
+            CalendarDayModel(
+                date(2026, 7, 30), False, tuple(item.period_id for item in periods), None
+            ),
         ),
         periods=periods,
-        campuses=(CampusModel("C1", "校舎", 2, 2, "G1", True),),
+        campuses=(
+            CampusModel("C1", "第一校舎", 1, True),
+            CampusModel("C2", "第二校舎", 2, True),
+        ),
         rooms=(
-            RoomModel("R1", "教室1", "C1", True),
-            RoomModel("R2", "教室2", "C1", True),
+            RoomModel("R1", "101", "C1", 1, True),
+            RoomModel("R2", "102", "C1", 2, True),
+            RoomModel("R3", "201", "C2", 1, True),
         ),
         teachers=(
-            TeacherModel("T1", "教師1", "C1", ("S1", "S2"), 2, 2, True, 1, True),
-            TeacherModel("T2", "教師2", "C1", ("S1", "S2"), 2, 2, True, 1, True),
+            TeacherModel("T1", "教師一", True),
+            TeacherModel("T2", "教師二", True),
         ),
         classes=(
-            ClassModel("CL1", "クラス1", "C1", "junior_high", 1, "non_exam", (), 2, 2, 2, (), True),
-            ClassModel("CL2", "クラス2", "C1", "junior_high", 2, "non_exam", (), 2, 2, 2, (), True),
+            ClassModel("CL1", "小学A", "C1", "elementary", 6, "non_exam", None, True),
+            ClassModel("CL2", "中学B", "C2", "junior_high", 3, "exam", "T2", True),
         ),
-        subjects=(SubjectModel("S1", "数学", True), SubjectModel("S2", "英語", True)),
+        subjects=(
+            SubjectModel("S1", "算数", True),
+            SubjectModel("S2", "英語", True),
+        ),
         lesson_requirements=(
-            LessonRequirementModel("Q1", "CL1", "S1", 1, "T1", (), ("R1",), True, 1, True),
-            LessonRequirementModel("Q2", "CL2", "S2", 1, "T2", (), ("R2",), True, 1, True),
+            LessonRequirementModel("Q1", "CL1", "S1", "T1", 2, 1, True),
+            LessonRequirementModel("Q2", "CL2", "S2", "T2", 2, 1, True),
         ),
         teacher_availability=tuple(
-            TeacherAvailabilityModel(teacher, target, period.period_id, "available")
-            for teacher in ("T1", "T2")
-            for target in dates
+            TeacherAvailabilityModel(teacher_id, target_date, period.period_id, True)
+            for teacher_id in ("T1", "T2")
+            for target_date in output_dates
             for period in periods
         ),
-        fixed_lessons=(FixedLessonModel("F1", "Q1", dates[0], "P1", "T1", "CL1", "S1", "R1"),),
         placement_rules=(
             PlacementRuleModel(
-                "RULE1",
-                "許可時限",
+                "R_CLASS_BASE",
+                "クラス共通",
                 True,
                 "hard",
                 "class",
-                ("exam_category",),
+                (),
+                (),
+                (),
+                None,
+                None,
+                None,
+                (),
+                tuple(item.period_id for item in periods),
+                3,
+                None,
+                3,
+                10,
+            ),
+            PlacementRuleModel(
+                "R_ELEMENTARY",
+                "小学部",
+                True,
+                "hard",
+                "class",
+                ("division",),
                 ("eq",),
-                ("non_exam",),
-                "C1",
-                dates[0],
-                dates[-1],
+                ("elementary",),
+                None,
+                None,
+                None,
                 (),
                 ("P1", "P2", "P3"),
+                None,
+                None,
+                None,
+                20,
+            ),
+            PlacementRuleModel(
+                "R_JH_OVERRIDE",
+                "中学部指定日",
+                True,
+                "override",
+                "class",
+                ("division", "grade"),
+                ("eq", "between"),
+                ("junior_high", "1/3"),
+                None,
+                output_dates[1],
+                output_dates[1],
+                ("TUE",),
+                ("P4", "P5", "P6"),
+                2,
+                None,
+                2,
+                30,
+            ),
+            PlacementRuleModel(
+                "R_TEACHER_BASE",
+                "教師共通",
+                True,
+                "hard",
+                "teacher",
                 (),
-                2,
+                (),
+                (),
                 None,
                 None,
-                2,
-                100,
+                None,
+                (),
+                (),
+                4,
+                3,
+                None,
+                10,
             ),
         ),
     )

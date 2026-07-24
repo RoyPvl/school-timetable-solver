@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
-from school_timetable_solver.model.input_models import InputDataModel
+from school_timetable_solver.model.input_models import GenerationMode, InputDataModel
 from school_timetable_solver.model.solver_models import SolverStatisticsModel
 
 
@@ -44,15 +45,6 @@ class ScheduledLessonModel:
 
 
 @dataclass(frozen=True, slots=True)
-class UnplacedLessonModel:
-    requirement_id: str
-    required_periods: int
-    generated_periods: int
-    shortage: int
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
 class SolverResultModel:
     lessons: tuple[ScheduledLessonModel, ...]
     statistics: SolverStatisticsModel
@@ -62,7 +54,10 @@ class SolverResultModel:
 class GenerationRequestModel:
     input_path: Path
     output_path: Path
-    log_path: Path | None = None
+    log_path: Path | None
+    solve_mode: GenerationMode
+    max_solve_seconds: float
+    random_seed: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +67,47 @@ class GenerationResultModel:
     request: GenerationRequestModel
     input_data: InputDataModel | None
     lessons: tuple[ScheduledLessonModel, ...]
-    unplaced_lessons: tuple[UnplacedLessonModel, ...]
     validation_report: ValidationReportModel
     solver_statistics: SolverStatisticsModel | None
+
+
+@dataclass(frozen=True, slots=True)
+class OutputLessonModel:
+    class_display_name: str
+    subject_display_name: str
+    teacher_display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class DailyTimetableModel:
+    target_date: date
+    lessons_by_period_and_room: Mapping[tuple[str, str], OutputLessonModel]
+
+
+@dataclass(frozen=True, slots=True)
+class RoomColumnModel:
+    room_id: str
+    room_display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class CampusColumnGroupModel:
+    campus_id: str
+    campus_display_name: str
+    rooms: tuple[RoomColumnModel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OutputPeriodModel:
+    period_id: str
+    period_name: str
+    output_order: int
+    start_time: time
+    end_time: time
+
+
+@dataclass(frozen=True, slots=True)
+class TimetableDocumentModel:
+    dates: tuple[DailyTimetableModel, ...]
+    campuses: tuple[CampusColumnGroupModel, ...]
+    periods: tuple[OutputPeriodModel, ...]

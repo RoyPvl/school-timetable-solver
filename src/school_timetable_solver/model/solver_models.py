@@ -8,7 +8,7 @@ from datetime import date
 class EffectiveClassDateRuleModel:
     class_id: str
     target_date: date
-    allowed_period_ids: tuple[str, ...]
+    allowed_period_ids: tuple[str, ...] | None
     daily_hard_limit: int | None
     attendance_streak_limit: int | None
     applied_rule_ids: tuple[str, ...]
@@ -20,14 +20,21 @@ class EffectiveTeacherDateRuleModel:
     target_date: date
     daily_hard_limit: int | None
     consecutive_hard_limit: int | None
-    required_transfer_gap: int
     applied_rule_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RuleResolutionIssueModel:
+    rule_id: str
+    target: str
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedRuleSetModel:
     class_date_rules: tuple[EffectiveClassDateRuleModel, ...]
     teacher_date_rules: tuple[EffectiveTeacherDateRuleModel, ...]
+    issues: tuple[RuleResolutionIssueModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

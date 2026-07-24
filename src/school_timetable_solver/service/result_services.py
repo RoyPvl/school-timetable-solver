@@ -3,10 +3,17 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from itertools import pairwise
+from types import MappingProxyType
 
 from school_timetable_solver.model.input_models import InputDataModel
 from school_timetable_solver.model.result_models import (
+    CampusColumnGroupModel,
+    DailyTimetableModel,
+    OutputLessonModel,
+    OutputPeriodModel,
+    RoomColumnModel,
     ScheduledLessonModel,
+    TimetableDocumentModel,
     ValidationIssueModel,
     ValidationReportModel,
 )
@@ -14,7 +21,7 @@ from school_timetable_solver.model.solver_models import ResolvedRuleSetModel
 
 
 class ValidateResultService:
-    """Independently verify every Ver.1 hard rule without OR-Tools types."""
+    """Independently verify all input/output-contract v0.1 hard rules."""
 
     def execute(
         self,
@@ -26,11 +33,10 @@ class ValidateResultService:
         self._validate_required_counts(input_data, lessons, issues)
         self._validate_overlaps(lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
-        self._validate_fixed_lessons(input_data, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
         self._validate_consecutive_periods(input_data, resolved_rules, lessons, issues)
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
-        self._validate_campus_transfers(input_data, lessons, issues)
+        self._validate_single_campus_per_day(lessons, issues)
         return ValidationReportModel(tuple(issues))
 
     def _validate_required_counts(
@@ -39,8 +45,13 @@ class ValidateResultService:
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
+        requirements = {
+            requirement.requirement_id: requirement
+            for requirement in input_data.lesson_requirements
+            if requirement.enabled
+        }
         counts = Counter(lesson.requirement_id for lesson in lessons)
-        for requirement in input_data.lesson_requirements:
+        for requirement in requirements.values():
             generated = counts[requirement.requirement_id]
             if generated != requirement.required_periods:
                 issues.append(
@@ -53,13 +64,27 @@ class ValidateResultService:
                         ),
                     )
                 )
+        for lesson in lessons:
+            requirement = requirements.get(lesson.requirement_id)
+            if requirement is None or (
+                requirement.class_id != lesson.class_id
+                or requirement.subject_id != lesson.subject_id
+                or requirement.teacher_id != lesson.teacher_id
+            ):
+                issues.append(
+                    self._issue(
+                        "H06",
+                        self._lesson_target(lesson),
+                        "授業結果が有効な授業要求と一致しません",
+                    )
+                )
 
     def _validate_overlaps(
         self,
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        key_specs = (
+        specifications = (
             (
                 "H01",
                 "教師",
@@ -76,7 +101,7 @@ class ValidateResultService:
                 Counter((item.room_id, item.target_date, item.period_id) for item in lessons),
             ),
         )
-        for rule_id, label, counts in key_specs:
+        for rule_id, label, counts in specifications:
             for key, count in counts.items():
                 if count > 1:
                     issues.append(
@@ -90,70 +115,58 @@ class ValidateResultService:
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        calendars = {item.target_date: item for item in input_data.calendar_days}
+        calendars = {day.target_date: day for day in input_data.calendar_days if day.output_enabled}
+        periods = {period.period_id: period for period in input_data.periods}
         availability = {
-            (item.teacher_id, item.target_date, item.period_id): item.availability
+            (item.teacher_id, item.target_date, item.period_id): item.available
             for item in input_data.teacher_availability
         }
         class_rules = {
             (item.class_id, item.target_date): item for item in resolved_rules.class_date_rules
         }
+        campuses = {item.campus_id: item for item in input_data.campuses}
         rooms = {item.room_id: item for item in input_data.rooms}
         classes = {item.class_id: item for item in input_data.classes}
         teachers = {item.teacher_id: item for item in input_data.teachers}
+        subjects = {item.subject_id: item for item in input_data.subjects}
         for lesson in lessons:
             target = self._lesson_target(lesson)
-            calendar = calendars[lesson.target_date]
-            if not calendar.is_open or lesson.period_id not in calendar.available_period_ids:
-                issues.append(self._issue("H04", target, "休館日または利用不可時限への配置です"))
-            if availability.get((lesson.teacher_id, lesson.target_date, lesson.period_id)) not in {
-                "available",
-                "preferred",
-            }:
+            calendar = calendars.get(lesson.target_date)
+            if calendar is None:
+                issues.append(self._issue("H04", target, "出力対象外日への配置です"))
+            elif lesson.period_id not in calendar.enabled_period_ids:
+                issues.append(self._issue("H04", target, "日付上利用不可時限への配置です"))
+            if lesson.period_id not in periods:
+                issues.append(self._issue("H04", target, "未知の時限への配置です"))
+            if not availability.get(
+                (lesson.teacher_id, lesson.target_date, lesson.period_id), False
+            ):
                 issues.append(self._issue("H05", target, "教師勤務不可日時への配置です"))
-            rule = class_rules[(lesson.class_id, lesson.target_date)]
-            if lesson.period_id not in rule.allowed_period_ids:
-                issues.append(self._issue("H13", target, "配置ルールの許可時限外です"))
-            room = rooms[lesson.room_id]
-            class_model = classes[lesson.class_id]
-            teacher = teachers[lesson.teacher_id]
-            if not room.enabled or room.campus_id != class_model.campus_id:
-                issues.append(self._issue("H14", target, "利用不可教室または校舎不一致です"))
-            if not teacher.enabled or lesson.subject_id not in teacher.subject_ids:
-                issues.append(self._issue("H05", target, "無効な教師または担当外教科です"))
+            rule = class_rules.get((lesson.class_id, lesson.target_date))
+            if rule is None or lesson.period_id not in (rule.allowed_period_ids or ()):
+                issues.append(self._issue("H13", target, "クラス許可時限外への配置です"))
 
-    def _validate_fixed_lessons(
-        self,
-        input_data: InputDataModel,
-        lessons: tuple[ScheduledLessonModel, ...],
-        issues: list[ValidationIssueModel],
-    ) -> None:
-        lesson_keys = {
-            (
-                item.requirement_id,
-                item.target_date,
-                item.period_id,
-                item.teacher_id,
-                item.class_id,
-                item.subject_id,
-                item.room_id,
-            )
-            for item in lessons
-        }
-        for fixed in input_data.fixed_lessons:
-            key = (
-                fixed.requirement_id,
-                fixed.target_date,
-                fixed.period_id,
-                fixed.teacher_id,
-                fixed.class_id,
-                fixed.subject_id,
-                fixed.room_id,
-            )
-            if key not in lesson_keys:
-                issues.append(
-                    self._issue("H12", fixed.fixed_lesson_id, "固定授業が配置されていません")
-                )
+            room = rooms.get(lesson.room_id)
+            class_model = classes.get(lesson.class_id)
+            teacher = teachers.get(lesson.teacher_id)
+            subject = subjects.get(lesson.subject_id)
+            campus = campuses.get(lesson.campus_id)
+            if (
+                room is None
+                or class_model is None
+                or teacher is None
+                or subject is None
+                or campus is None
+                or not room.enabled
+                or not class_model.enabled
+                or not teacher.enabled
+                or not subject.enabled
+                or not campus.enabled
+            ):
+                issues.append(self._issue("H14", target, "未知または無効なマスタへの配置です"))
+                continue
+            if room.campus_id != class_model.campus_id or lesson.campus_id != class_model.campus_id:
+                issues.append(self._issue("H14", target, "教室とクラス所属校舎が一致しません"))
 
     def _validate_daily_limits(
         self,
@@ -171,27 +184,24 @@ class ValidateResultService:
             for item in resolved_rules.teacher_date_rules
         }
         requirement_limits = {
-            item.requirement_id: item.max_periods_per_day for item in input_data.lesson_requirements
+            item.requirement_id: item.max_periods_per_day
+            for item in input_data.lesson_requirements
+            if item.enabled
         }
-        class_counts = Counter((item.class_id, item.target_date) for item in lessons)
-        teacher_counts = Counter((item.teacher_id, item.target_date) for item in lessons)
-        requirement_counts = Counter((item.requirement_id, item.target_date) for item in lessons)
-        for key, count in class_counts.items():
-            limit = class_limits[key]
+        for key, count in Counter((item.class_id, item.target_date) for item in lessons).items():
+            limit = class_limits.get(key)
             if limit is not None and count > limit:
                 issues.append(self._issue("H07", str(key), f"クラス日別上限超過: {count}>{limit}"))
-        for (requirement_id, target_date), count in requirement_counts.items():
-            limit = requirement_limits[requirement_id]
+        for key, count in Counter(
+            (item.requirement_id, item.target_date) for item in lessons
+        ).items():
+            limit = requirement_limits.get(key[0])
             if limit is not None and count > limit:
                 issues.append(
-                    self._issue(
-                        "H07",
-                        f"{requirement_id}/{target_date}",
-                        f"授業要求の日別上限超過: {count}>{limit}",
-                    )
+                    self._issue("H07", str(key), f"授業要求日別上限超過: {count}>{limit}")
                 )
-        for key, count in teacher_counts.items():
-            limit = teacher_limits[key]
+        for key, count in Counter((item.teacher_id, item.target_date) for item in lessons).items():
+            limit = teacher_limits.get(key)
             if limit is not None and count > limit:
                 issues.append(self._issue("H08", str(key), f"教師日別上限超過: {count}>{limit}"))
 
@@ -202,21 +212,19 @@ class ValidateResultService:
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        period_orders = {
-            period.period_id: order
-            for order, period in enumerate(
-                sorted(input_data.periods, key=lambda item: item.sort_order), start=1
-            )
-        }
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
         limits = {
             (item.teacher_id, item.target_date): item.consecutive_hard_limit
             for item in resolved_rules.teacher_date_rules
         }
         grouped: dict[tuple[str, date], set[int]] = defaultdict(set)
         for lesson in lessons:
-            grouped[(lesson.teacher_id, lesson.target_date)].add(period_orders[lesson.period_id])
+            if lesson.period_id in period_orders:
+                grouped[(lesson.teacher_id, lesson.target_date)].add(
+                    period_orders[lesson.period_id]
+                )
         for key, orders in grouped.items():
-            limit = limits[key]
+            limit = limits.get(key)
             if limit is None:
                 continue
             longest = 0
@@ -228,7 +236,7 @@ class ValidateResultService:
                 previous = order
             if longest > limit:
                 issues.append(
-                    self._issue("H09", str(key), f"教師連続コマ上限超過: {longest}>{limit}")
+                    self._issue("H09", str(key), f"教師連続時限上限超過: {longest}>{limit}")
                 )
 
     def _validate_attendance_streaks(
@@ -243,11 +251,14 @@ class ValidateResultService:
             (item.class_id, item.target_date): item.attendance_streak_limit
             for item in resolved_rules.class_date_rules
         }
-        dates = tuple(sorted(day.target_date for day in input_data.calendar_days))
+        dates = tuple(
+            sorted(day.target_date for day in input_data.calendar_days if day.output_enabled)
+        )
+        date_indexes = {target_date: index for index, target_date in enumerate(dates)}
         for (class_id, start_date), limit in limits.items():
-            if limit is None:
+            if limit is None or start_date not in date_indexes:
                 continue
-            start_index = dates.index(start_date)
+            start_index = date_indexes[start_date]
             window = dates[start_index : start_index + limit + 1]
             if len(window) != limit + 1:
                 continue
@@ -256,47 +267,131 @@ class ValidateResultService:
             if all((class_id, target_date) in attendance for target_date in window):
                 issues.append(
                     self._issue(
-                        "H10", f"{class_id}/{start_date}", f"最大連続登校日数を超過: {limit}"
+                        "H10",
+                        f"{class_id}/{start_date}",
+                        f"最大連続登校日数を超過しています: {limit}",
                     )
                 )
 
-    def _validate_campus_transfers(
+    def _validate_single_campus_per_day(
         self,
-        input_data: InputDataModel,
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        teachers = {item.teacher_id: item for item in input_data.teachers}
-        period_orders = {
-            period.period_id: order
-            for order, period in enumerate(
-                sorted(input_data.periods, key=lambda item: item.sort_order), start=1
-            )
-        }
-        grouped: dict[tuple[str, date], list[ScheduledLessonModel]] = defaultdict(list)
+        campuses: dict[tuple[str, date], set[str]] = defaultdict(set)
         for lesson in lessons:
-            grouped[(lesson.teacher_id, lesson.target_date)].append(lesson)
-        for (teacher_id, target_date), daily_lessons in grouped.items():
-            teacher = teachers[teacher_id]
-            for index, left in enumerate(daily_lessons):
-                for right in daily_lessons[index + 1 :]:
-                    if left.campus_id == right.campus_id:
-                        continue
-                    distance = abs(period_orders[left.period_id] - period_orders[right.period_id])
-                    if (
-                        not teacher.can_transfer_campus
-                        or distance - 1 < teacher.required_transfer_gap
-                    ):
-                        issues.append(
-                            self._issue(
-                                "H11",
-                                f"{teacher_id}/{target_date}",
-                                "校舎移動に必要な空き時限数を満たしていません",
-                            )
-                        )
+            campuses[(lesson.teacher_id, lesson.target_date)].add(lesson.campus_id)
+        for key, campus_ids in campuses.items():
+            if len(campus_ids) > 1:
+                issues.append(
+                    self._issue(
+                        "H11",
+                        str(key),
+                        f"同一教師・同一日に複数校舎へ配置されています: {sorted(campus_ids)}",
+                    )
+                )
 
     def _lesson_target(self, lesson: ScheduledLessonModel) -> str:
-        return f"{lesson.requirement_id}/{lesson.target_date}/{lesson.period_id}"
+        return f"{lesson.requirement_id}/{lesson.target_date}/{lesson.period_id}/{lesson.room_id}"
 
     def _issue(self, rule_id: str, target: str, message: str) -> ValidationIssueModel:
         return ValidationIssueModel(rule_id, "ERROR", target, message)
+
+
+class BuildTimetableDocumentService:
+    """Build the Excel-independent timetable document in contractual output order."""
+
+    def execute(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+    ) -> TimetableDocumentModel:
+        output_days = sorted(
+            (day for day in input_data.calendar_days if day.output_enabled),
+            key=lambda item: item.target_date,
+        )
+        if not output_days:
+            raise ValueError("出力対象日がありません")
+        output_dates = {day.target_date for day in output_days}
+        campuses = sorted(
+            (campus for campus in input_data.campuses if campus.enabled),
+            key=lambda item: item.output_order,
+        )
+        rooms_by_campus = {
+            campus.campus_id: tuple(
+                sorted(
+                    (
+                        room
+                        for room in input_data.rooms
+                        if room.enabled and room.campus_id == campus.campus_id
+                    ),
+                    key=lambda item: item.output_order,
+                )
+            )
+            for campus in campuses
+        }
+        campus_models = tuple(
+            CampusColumnGroupModel(
+                campus_id=campus.campus_id,
+                campus_display_name=campus.campus_name,
+                rooms=tuple(
+                    RoomColumnModel(room.room_id, room.room_name)
+                    for room in rooms_by_campus[campus.campus_id]
+                ),
+            )
+            for campus in campuses
+        )
+        if not any(campus.rooms for campus in campus_models):
+            raise ValueError("出力対象の有効教室がありません")
+        period_models = tuple(
+            OutputPeriodModel(
+                period.period_id,
+                period.period_name,
+                period.output_order,
+                period.start_time,
+                period.end_time,
+            )
+            for period in sorted(input_data.periods, key=lambda item: item.output_order)
+        )
+        if len(period_models) != 6:
+            raise ValueError("出力時限が6件ではありません")
+        valid_period_ids = {period.period_id for period in period_models}
+        room_ids = {room.room_id for campus in campus_models for room in campus.rooms}
+        classes = {item.class_id: item for item in input_data.classes if item.enabled}
+        subjects = {item.subject_id: item for item in input_data.subjects if item.enabled}
+        teachers = {item.teacher_id: item for item in input_data.teachers if item.enabled}
+        by_date: dict[date, dict[tuple[str, str], OutputLessonModel]] = {
+            target_date: {} for target_date in output_dates
+        }
+        for lesson in lessons:
+            if lesson.target_date not in output_dates:
+                raise ValueError(f"出力対象外日の授業です: {lesson.target_date}")
+            if lesson.period_id not in valid_period_ids:
+                raise ValueError(f"未知の時限です: {lesson.period_id}")
+            if lesson.room_id not in room_ids:
+                raise ValueError(f"未知または無効な教室です: {lesson.room_id}")
+            if (
+                lesson.class_id not in classes
+                or lesson.subject_id not in subjects
+                or lesson.teacher_id not in teachers
+            ):
+                raise ValueError(f"未知または無効な表示IDです: {lesson.requirement_id}")
+            key = (lesson.period_id, lesson.room_id)
+            if key in by_date[lesson.target_date]:
+                raise ValueError(
+                    "日付/時限/教室が重複しています: "
+                    f"{lesson.target_date}/{lesson.period_id}/{lesson.room_id}"
+                )
+            by_date[lesson.target_date][key] = OutputLessonModel(
+                classes[lesson.class_id].class_name,
+                subjects[lesson.subject_id].subject_name,
+                teachers[lesson.teacher_id].teacher_name,
+            )
+        daily_models = tuple(
+            DailyTimetableModel(
+                day.target_date,
+                MappingProxyType(dict(by_date[day.target_date])),
+            )
+            for day in output_days
+        )
+        return TimetableDocumentModel(daily_models, campus_models, period_models)

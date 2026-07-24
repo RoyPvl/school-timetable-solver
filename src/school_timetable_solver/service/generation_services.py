@@ -1,65 +1,36 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
 
 from school_timetable_solver.model.input_models import GenerationMode, InputDataModel
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
     GenerationResultModel,
     ScheduledLessonModel,
-    UnplacedLessonModel,
     ValidationIssueModel,
     ValidationReportModel,
 )
-from school_timetable_solver.model.solver_models import CandidateSlotModel, SolverStatisticsModel
+from school_timetable_solver.model.solver_models import SolverStatisticsModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
 )
 from school_timetable_solver.service.protocols import InputReader, TimetableWriter
-from school_timetable_solver.service.result_services import ValidateResultService
+from school_timetable_solver.service.result_services import (
+    BuildTimetableDocumentService,
+    ValidateResultService,
+)
 from school_timetable_solver.service.solver_service import TimetableSolverService
-from school_timetable_solver.validator.input_validators import InputValidator
+from school_timetable_solver.validator.input_validators import (
+    CapacityFeasibilityValidator,
+    InputValidator,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 
 class ValidateInputService:
-    """Read input, aggregate all input issues, and write a validation workbook."""
-
-    def __init__(
-        self,
-        input_reader: InputReader,
-        validators: tuple[InputValidator, ...],
-        output_writer: TimetableWriter,
-    ) -> None:
-        self._input_reader = input_reader
-        self._validators = validators
-        self._output_writer = output_writer
-
-    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
-        read_result = self._input_reader.read(request.input_path)
-        issues = list(read_result.issues)
-        if read_result.input_data is not None:
-            for validator in self._validators:
-                issues.extend(validator.validate(read_result.input_data))
-        result = GenerationResultModel(
-            status="INPUT_ERROR" if issues else "VALIDATED",
-            exit_code=2 if issues else 0,
-            request=request,
-            input_data=read_result.input_data,
-            lessons=(),
-            unplaced_lessons=(),
-            validation_report=ValidationReportModel(tuple(issues)),
-            solver_statistics=None,
-        )
-        self._output_writer.write(result, request.output_path)
-        return result
-
-
-class GenerateTimetableService:
-    """Coordinate validation, planning, solving, independent validation, and output."""
+    """Read, validate, resolve rules, and detect obvious supply shortages."""
 
     def __init__(
         self,
@@ -67,76 +38,137 @@ class GenerateTimetableService:
         validators: tuple[InputValidator, ...],
         rule_resolver: RuleResolverService,
         candidate_builder: CandidateBuilderService,
+        capacity_validator: CapacityFeasibilityValidator,
+    ) -> None:
+        self._input_reader = input_reader
+        self._validators = validators
+        self._rule_resolver = rule_resolver
+        self._candidate_builder = candidate_builder
+        self._capacity_validator = capacity_validator
+
+    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
+        read_result = self._input_reader.read(request.input_path)
+        issues = list(read_result.issues)
+        for issue in issues:
+            if issue.severity == "WARNING":
+                LOGGER.warning("%s target=%s %s", issue.rule_id, issue.target, issue.message)
+        input_data = read_result.input_data
+        if input_data is not None and not self._has_errors(issues):
+            for validator in self._validators:
+                issues.extend(validator.validate(input_data))
+        if input_data is not None and not self._has_errors(issues):
+            resolved_rules = self._rule_resolver.execute(input_data)
+            issues.extend(
+                ValidationIssueModel(issue.rule_id, "ERROR", issue.target, issue.message)
+                for issue in resolved_rules.issues
+            )
+            if not self._has_errors(issues):
+                candidates = self._candidate_builder.execute(input_data, resolved_rules)
+                issues.extend(
+                    self._capacity_validator.validate(
+                        input_data,
+                        resolved_rules,
+                        candidates,
+                    )
+                )
+        has_errors = self._has_errors(issues)
+        return GenerationResultModel(
+            status="INPUT_ERROR" if has_errors else "VALIDATED",
+            exit_code=2 if has_errors else 0,
+            request=request,
+            input_data=input_data,
+            lessons=(),
+            validation_report=ValidationReportModel(tuple(issues)),
+            solver_statistics=None,
+        )
+
+    def _has_errors(self, issues: list[ValidationIssueModel]) -> bool:
+        return any(issue.severity == "ERROR" for issue in issues)
+
+
+class GenerateTimetableService:
+    """Coordinate validation, strict solving, independent verification, and output."""
+
+    def __init__(
+        self,
+        input_reader: InputReader,
+        validators: tuple[InputValidator, ...],
+        rule_resolver: RuleResolverService,
+        candidate_builder: CandidateBuilderService,
+        capacity_validator: CapacityFeasibilityValidator,
         solver_service: TimetableSolverService,
         result_validator: ValidateResultService,
+        document_builder: BuildTimetableDocumentService,
         output_writer: TimetableWriter,
     ) -> None:
         self._input_reader = input_reader
         self._validators = validators
         self._rule_resolver = rule_resolver
         self._candidate_builder = candidate_builder
+        self._capacity_validator = capacity_validator
         self._solver_service = solver_service
         self._result_validator = result_validator
+        self._document_builder = document_builder
         self._output_writer = output_writer
 
     def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
-        LOGGER.info("実行開始 input=%s output=%s", request.input_path, request.output_path)
+        LOGGER.info(
+            "実行開始 input=%s output=%s mode=%s max_seconds=%s random_seed=%s",
+            request.input_path,
+            request.output_path,
+            request.solve_mode.value,
+            request.max_solve_seconds,
+            request.random_seed,
+        )
         if request.input_path.resolve() == request.output_path.resolve():
-            issue = ValidationIssueModel(
-                "INPUT_OUTPUT_PATH_CONFLICT",
-                "ERROR",
-                str(request.input_path),
-                "入力ファイルと出力ファイルに同じパスは指定できません",
-            )
-            return GenerationResultModel(
-                "INPUT_ERROR",
-                2,
+            return self._result(
                 request,
                 None,
-                (),
-                (),
-                ValidationReportModel((issue,)),
-                None,
+                "INPUT_ERROR",
+                2,
+                [
+                    ValidationIssueModel(
+                        "INPUT_OUTPUT_PATH_CONFLICT",
+                        "ERROR",
+                        str(request.input_path),
+                        "入力ファイルと出力ファイルに同じパスは指定できません",
+                    )
+                ],
             )
         read_result = self._input_reader.read(request.input_path)
         issues = list(read_result.issues)
+        for issue in issues:
+            if issue.severity == "WARNING":
+                LOGGER.warning("%s target=%s %s", issue.rule_id, issue.target, issue.message)
         input_data = read_result.input_data
-        if input_data is not None:
-            for validator in self._validators:
-                issues.extend(validator.validate(input_data))
-        if input_data is None or issues:
-            return self._write_terminal_result(
-                request, input_data, "INPUT_ERROR", 2, issues, (), (), None
-            )
-        LOGGER.info(
-            "入力読込完了 requirements=%d teachers=%d classes=%d",
-            len(input_data.lesson_requirements),
-            len(input_data.teachers),
-            len(input_data.classes),
-        )
-        if input_data.settings.solve_mode is GenerationMode.VALIDATE_ONLY:
-            return self._write_terminal_result(
-                request, input_data, "VALIDATED", 0, [], (), (), None
-            )
+        if input_data is None:
+            return self._result(request, None, "INPUT_ERROR", 2, issues)
+        for validator in self._validators:
+            issues.extend(validator.validate(input_data))
+        if self._has_errors(issues):
+            return self._result(request, input_data, "INPUT_ERROR", 2, issues)
 
         resolved_rules = self._rule_resolver.execute(input_data)
-        candidate_result = self._candidate_builder.execute(input_data, resolved_rules)
-        LOGGER.info("Candidate生成完了 candidates=%d", len(candidate_result.candidates))
-        insufficiencies = self._candidate_insufficiencies(input_data, candidate_result.candidates)
-        if insufficiencies:
-            unplaced = self._build_unplaced(input_data, (), "候補枠不足")
-            return self._write_terminal_result(
-                request,
-                input_data,
-                "INPUT_ERROR",
-                2,
-                insufficiencies,
-                (),
-                unplaced,
-                None,
-            )
+        issues.extend(
+            ValidationIssueModel(issue.rule_id, "ERROR", issue.target, issue.message)
+            for issue in resolved_rules.issues
+        )
+        if self._has_errors(issues):
+            return self._result(request, input_data, "INPUT_ERROR", 2, issues)
+        candidates = self._candidate_builder.execute(input_data, resolved_rules)
+        issues.extend(self._capacity_validator.validate(input_data, resolved_rules, candidates))
+        if self._has_errors(issues):
+            return self._result(request, input_data, "CANDIDATE_INSUFFICIENCY", 2, issues)
+        LOGGER.info("入力検証完了 candidates=%d", len(candidates.candidates))
+        if request.solve_mode is GenerationMode.VALIDATE_ONLY:
+            return self._result(request, input_data, "VALIDATED", 0, issues)
 
-        solver_result = self._solver_service.execute(input_data, resolved_rules, candidate_result)
+        solver_result = self._solver_service.execute(
+            request,
+            input_data,
+            resolved_rules,
+            candidates,
+        )
         LOGGER.info(
             "Solver完了 status=%s wall_time=%f",
             solver_result.statistics.status,
@@ -144,108 +176,82 @@ class GenerateTimetableService:
         )
         if solver_result.statistics.status not in {"OPTIMAL", "FEASIBLE"}:
             exit_code = 3 if solver_result.statistics.status in {"INFEASIBLE", "UNKNOWN"} else 1
-            unplaced = self._build_unplaced(input_data, solver_result.lessons, "strict生成で解なし")
-            return self._write_terminal_result(
+            return self._result(
                 request,
                 input_data,
                 solver_result.statistics.status,
                 exit_code,
-                [],
+                issues,
                 solver_result.lessons,
-                unplaced,
                 solver_result.statistics,
             )
-
         validation_report = self._result_validator.execute(
-            input_data, resolved_rules, solver_result.lessons
+            input_data,
+            resolved_rules,
+            solver_result.lessons,
         )
-        if validation_report.has_errors():
-            return self._write_terminal_result(
+        issues.extend(validation_report.issues)
+        if self._has_errors(issues):
+            return self._result(
                 request,
                 input_data,
-                "INTERNAL_VALIDATION_ERROR",
+                "RESULT_VALIDATION_ERROR",
                 4,
-                list(validation_report.issues),
+                issues,
                 solver_result.lessons,
-                (),
                 solver_result.statistics,
             )
-        return self._write_terminal_result(
+        try:
+            document = self._document_builder.execute(input_data, solver_result.lessons)
+        except ValueError as exc:
+            issues.append(
+                ValidationIssueModel(
+                    "OUTPUT_DOCUMENT_INVALID",
+                    "ERROR",
+                    "timetable_document",
+                    str(exc),
+                )
+            )
+            return self._result(
+                request,
+                input_data,
+                "OUTPUT_DOCUMENT_ERROR",
+                4,
+                issues,
+                solver_result.lessons,
+                solver_result.statistics,
+            )
+        self._output_writer.write(document, request.output_path)
+        return self._result(
             request,
             input_data,
             solver_result.statistics.status,
             0,
-            [],
+            issues,
             solver_result.lessons,
-            (),
             solver_result.statistics,
         )
 
-    def _candidate_insufficiencies(
-        self, input_data: InputDataModel, candidates: tuple[CandidateSlotModel, ...]
-    ) -> list[ValidationIssueModel]:
-        slots_by_requirement: dict[str, set[tuple[object, str]]] = {}
-        for candidate in candidates:
-            slots_by_requirement.setdefault(candidate.requirement_id, set()).add(
-                (candidate.target_date, candidate.period_id)
-            )
-        issues: list[ValidationIssueModel] = []
-        for requirement in input_data.lesson_requirements:
-            slot_count = len(slots_by_requirement.get(requirement.requirement_id, set()))
-            if slot_count < requirement.required_periods:
-                issues.append(
-                    ValidationIssueModel(
-                        "E011",
-                        "ERROR",
-                        requirement.requirement_id,
-                        (
-                            "解決済みルール適用後の候補枠が不足しています: "
-                            f"required={requirement.required_periods}, slots={slot_count}"
-                        ),
-                    )
-                )
-        return issues
-
-    def _build_unplaced(
-        self,
-        input_data: InputDataModel,
-        lessons: tuple[ScheduledLessonModel, ...],
-        reason: str,
-    ) -> tuple[UnplacedLessonModel, ...]:
-        counts = Counter(lesson.requirement_id for lesson in lessons)
-        return tuple(
-            UnplacedLessonModel(
-                requirement.requirement_id,
-                requirement.required_periods,
-                counts[requirement.requirement_id],
-                max(0, requirement.required_periods - counts[requirement.requirement_id]),
-                reason,
-            )
-            for requirement in input_data.lesson_requirements
-            if counts[requirement.requirement_id] < requirement.required_periods
-        )
-
-    def _write_terminal_result(
+    def _result(
         self,
         request: GenerationRequestModel,
         input_data: InputDataModel | None,
         status: str,
         exit_code: int,
         issues: list[ValidationIssueModel],
-        lessons: tuple[ScheduledLessonModel, ...],
-        unplaced: tuple[UnplacedLessonModel, ...],
-        statistics: SolverStatisticsModel | None,
+        lessons: tuple[ScheduledLessonModel, ...] = (),
+        statistics: SolverStatisticsModel | None = None,
     ) -> GenerationResultModel:
-        result = GenerationResultModel(
+        LOGGER.info("実行終了 status=%s exit_code=%d errors=%d", status, exit_code, len(issues))
+        return GenerationResultModel(
             status=status,
             exit_code=exit_code,
             request=request,
             input_data=input_data,
             lessons=lessons,
-            unplaced_lessons=unplaced,
             validation_report=ValidationReportModel(tuple(issues)),
             solver_statistics=statistics,
         )
-        self._output_writer.write(result, request.output_path)
-        LOGGER.info("実行終了 status=%s exit_code=%d", status, exit_code)
-        return result
+
+    def _has_errors(self, issues: list[ValidationIssueModel]) -> bool:
+        return any(issue.severity == "ERROR" for issue in issues)

@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Protocol
 
 from school_timetable_solver.model.result_models import (
-    GenerationResultModel,
     InputReadResultModel,
+    TimetableDocumentModel,
 )
 
 
@@ -14,4 +14,4 @@ class InputReader(Protocol):
 
 
 class TimetableWriter(Protocol):
-    def write(self, result: GenerationResultModel, path: Path) -> None: ...
+    def write(self, document: TimetableDocumentModel, path: Path) -> None: ...

@@ -3,90 +3,149 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from school_timetable_solver.model.input_models import (
-    CalendarDayModel,
-    InputDataModel,
-    TeacherAvailabilityModel,
-)
+from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
 )
 
 
-def test_rule_resolver_applies_rule_on_start_date_and_not_before(
+def test_rule_resolver_applies_hard_intersection_override_and_minimum_limits(
     minimal_input_data: InputDataModel,
 ) -> None:
-    first_rule = replace(
-        minimal_input_data.placement_rules[0],
-        start_date=date(2026, 7, 28),
-        allowed_period_ids=("P2",),
-    )
-    class_model = replace(minimal_input_data.classes[0], default_allowed_periods=("P1", "P2"))
-    input_data = replace(
-        minimal_input_data,
-        placement_rules=(first_rule,),
-        classes=(class_model, minimal_input_data.classes[1]),
-    )
+    resolved = RuleResolverService().execute(minimal_input_data)
 
-    resolved = RuleResolverService().execute(input_data)
-    by_date = {
-        item.target_date: item.allowed_period_ids
+    first = next(
+        item
         for item in resolved.class_date_rules
-        if item.class_id == "CL1"
+        if item.class_id == "CL1" and item.target_date == date(2026, 7, 27)
+    )
+    overridden = next(
+        item
+        for item in resolved.class_date_rules
+        if item.class_id == "CL2" and item.target_date == date(2026, 7, 28)
+    )
+
+    assert first.allowed_period_ids == ("P1", "P2", "P3")
+    assert first.daily_hard_limit == 3
+    assert overridden.allowed_period_ids == ("P4", "P5", "P6")
+    assert overridden.daily_hard_limit == 2
+    assert overridden.attendance_streak_limit == 2
+    assert not resolved.issues
+
+
+def test_rule_resolver_supports_class_attributes_teacher_id_campus_date_weekday_and_between(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    override = next(
+        item
+        for item in resolved.class_date_rules
+        if item.class_id == "CL2" and item.target_date == date(2026, 7, 28)
+    )
+    teacher = next(
+        item
+        for item in resolved.teacher_date_rules
+        if item.teacher_id == "T1" and item.target_date == date(2026, 7, 27)
+    )
+
+    assert "R_JH_OVERRIDE" in override.applied_rule_ids
+    assert "R_TEACHER_BASE" in teacher.applied_rule_ids
+
+
+def test_rule_resolver_reports_same_priority_conflict_and_missing_values(
+    minimal_input_data: InputDataModel,
+) -> None:
+    conflict = replace(
+        minimal_input_data.placement_rules[1],
+        rule_id="R_CONFLICT",
+        allowed_period_ids=("P4",),
+    )
+    without_teacher_rules = tuple(
+        rule for rule in minimal_input_data.placement_rules if rule.target_entity != "teacher"
+    )
+    invalid = replace(
+        minimal_input_data,
+        placement_rules=(*without_teacher_rules, conflict),
+    )
+
+    resolved = RuleResolverService().execute(invalid)
+    rule_ids = {issue.rule_id for issue in resolved.issues}
+
+    assert {"RULE_PRIORITY_CONFLICT", "RULE_REQUIRED_VALUE_MISSING"} <= rule_ids
+
+
+def test_candidate_builder_uses_output_periods_assigned_teacher_and_same_campus_rooms(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    result = CandidateBuilderService().execute(minimal_input_data, resolved)
+    q1 = [candidate for candidate in result.candidates if candidate.requirement_id == "Q1"]
+
+    assert q1
+    assert {candidate.target_date for candidate in q1} == {
+        date(2026, 7, 27),
+        date(2026, 7, 28),
     }
+    assert {candidate.period_id for candidate in q1} <= {"P1", "P2", "P3"}
+    assert {candidate.teacher_id for candidate in q1} == {"T1"}
+    assert {candidate.room_id for candidate in q1} == {"R1", "R2"}
 
-    assert by_date[date(2026, 7, 27)] == ("P1", "P2")
-    assert by_date[date(2026, 7, 28)] == ("P2",)
 
-
-def test_candidate_builder_rejects_unavailable_teacher_and_disallowed_period(
+def test_candidate_builder_treats_missing_teacher_row_as_unavailable(
     minimal_input_data: InputDataModel,
 ) -> None:
-    availability = tuple(
-        TeacherAvailabilityModel(
-            item.teacher_id,
-            item.target_date,
-            item.period_id,
-            "unavailable"
-            if (item.teacher_id, item.target_date, item.period_id)
-            == ("T1", date(2026, 7, 28), "P2")
-            else item.availability,
-        )
-        for item in minimal_input_data.teacher_availability
-    )
-    rule = replace(minimal_input_data.placement_rules[0], allowed_period_ids=("P1", "P2"))
-    input_data = replace(
-        minimal_input_data, teacher_availability=availability, placement_rules=(rule,)
-    )
-
-    resolved = RuleResolverService().execute(input_data)
-    result = CandidateBuilderService().execute(input_data, resolved)
-
-    assert all(candidate.period_id != "P3" for candidate in result.candidates)
-    assert not any(
-        candidate.teacher_id == "T1"
-        and candidate.target_date == date(2026, 7, 28)
-        and candidate.period_id == "P2"
-        for candidate in result.candidates
-    )
-    assert {summary.rule_id for summary in result.rejection_summaries} >= {"H05", "H13"}
-
-
-def test_candidate_builder_rejects_closed_calendar_and_disabled_room(
-    minimal_input_data: InputDataModel,
-) -> None:
-    closed_day = CalendarDayModel(
-        date(2026, 7, 27), "月", False, ("P1", "P2", "P3"), "closed", "休館"
-    )
-    disabled_room = replace(minimal_input_data.rooms[0], enabled=False)
     input_data = replace(
         minimal_input_data,
-        calendar_days=(closed_day, minimal_input_data.calendar_days[1]),
-        rooms=(disabled_room, minimal_input_data.rooms[1]),
+        teacher_availability=tuple(
+            item
+            for item in minimal_input_data.teacher_availability
+            if not (item.teacher_id == "T1" and item.target_date == date(2026, 7, 27))
+        ),
     )
-
     resolved = RuleResolverService().execute(input_data)
     result = CandidateBuilderService().execute(input_data, resolved)
 
-    assert {summary.rule_id for summary in result.rejection_summaries} >= {"H04", "H14"}
+    assert not [
+        item
+        for item in result.candidates
+        if item.teacher_id == "T1" and item.target_date == date(2026, 7, 27)
+    ]
+    assert any(summary.rule_id == "H05" for summary in result.rejection_summaries)
+
+
+def test_rule_resolver_in_operator_uses_slash_values(
+    minimal_input_data: InputDataModel,
+) -> None:
+    in_rule = PlacementRuleModel(
+        "R_IN",
+        "受験区分",
+        True,
+        "hard",
+        "class",
+        ("exam_category",),
+        ("in",),
+        ("exam/special",),
+        "C2",
+        None,
+        None,
+        (),
+        ("P1", "P2"),
+        None,
+        None,
+        None,
+        25,
+    )
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=(*minimal_input_data.placement_rules, in_rule),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+    target = next(
+        item
+        for item in resolved.class_date_rules
+        if item.class_id == "CL2" and item.target_date == date(2026, 7, 27)
+    )
+
+    assert target.allowed_period_ids == ("P1", "P2")

@@ -1,25 +1,13 @@
 from __future__ import annotations
 
-from collections import Counter
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 from school_timetable_solver.main import main
 
-REQUIRED_OUTPUT_SHEETS = {
-    "全体時間割",
-    "教師別時間割",
-    "クラス別時間割",
-    "教師別集計",
-    "クラス教科別集計",
-    "検証結果",
-    "実行条件",
-    "未配置授業",
-}
 
-
-def test_sample_cli_generates_verified_result_workbook(tmp_path: Path) -> None:
+def test_sample_cli_generates_one_sheet_verified_matrix_workbook(tmp_path: Path) -> None:
     output = tmp_path / "result.xlsx"
     log = tmp_path / "run.log"
 
@@ -31,6 +19,12 @@ def test_sample_cli_generates_verified_result_workbook(tmp_path: Path) -> None:
             str(output),
             "--log",
             str(log),
+            "--mode",
+            "strict",
+            "--max-solve-seconds",
+            "10",
+            "--random-seed",
+            "7",
         )
     )
 
@@ -38,60 +32,63 @@ def test_sample_cli_generates_verified_result_workbook(tmp_path: Path) -> None:
     assert output.is_file()
     assert log.is_file()
     workbook = load_workbook(output, data_only=True)
-    assert set(workbook.sheetnames) == REQUIRED_OUTPUT_SHEETS
-    rows = list(workbook["全体時間割"].iter_rows(min_row=2, values_only=True))
-    assert rows
-    assert max(Counter((row[6], row[0], row[1]) for row in rows).values()) == 1
-    assert max(Counter((row[4], row[0], row[1]) for row in rows).values()) == 1
-    assert max(Counter((row[3], row[0], row[1]) for row in rows).values()) == 1
-    summary_rows = list(workbook["クラス教科別集計"].iter_rows(min_row=2, values_only=True))
-    assert summary_rows and all(row[6] == 0 for row in summary_rows)
-    validation_rows = list(workbook["検証結果"].iter_rows(min_row=2, values_only=True))
-    assert not [row for row in validation_rows if row[1] == "ERROR"]
-    conditions: dict[str, object] = {
-        str(row[0]): row[1] for row in workbook["実行条件"].iter_rows(min_row=2, values_only=True)
+    assert workbook.sheetnames == ["全体"]
+    worksheet = workbook["全体"]
+    assert worksheet["A2"].value is not None
+    assert worksheet["G2"].value is not None
+    assert worksheet["A24"].value is not None
+    assert worksheet["G24"].value is None
+    assert {"A2:B2", "A3:B3", "C2:D2", "A4:A6"} <= {
+        str(item) for item in worksheet.merged_cells.ranges
     }
-    assert conditions["Solver状態"] in {"OPTIMAL", "FEASIBLE"}
-    assert conditions["乱数シード"] == 1
+    class_rows = (4, 7, 10, 13, 16, 19, 26, 29, 32, 35, 38, 41)
+    generated_class_cells = [
+        worksheet.cell(row, column).value
+        for row in class_rows
+        for column in (3, 4, 5, 9, 10, 11)
+        if worksheet.cell(row, column).value is not None
+    ]
+    assert len(generated_class_cells) == 4
+    assert worksheet["A2"].border.top.style == "thin"
+    assert worksheet["C4"].border.bottom.style == "hair"
+    assert workbook.__dict__.get("_external_links") == []
 
 
-def test_diagnostic_mode_is_reported_as_input_error(tmp_path: Path) -> None:
-    source = Path("projects/sample/input/時間割入力_サンプル.xlsx")
-    diagnostic_input = tmp_path / "diagnostic.xlsx"
-    workbook = load_workbook(source)
-    settings = workbook["01_基本設定"]
-    for row_number in range(2, settings.max_row + 1):
-        if settings.cell(row_number, 1).value == "solve_mode":
-            settings.cell(row_number, 2, "diagnostic")
-    workbook.save(diagnostic_input)
-    output = tmp_path / "diagnostic_result.xlsx"
+def test_validate_only_runs_without_solver_or_workbook_output(tmp_path: Path) -> None:
+    output = tmp_path / "validation.xlsx"
+    log = tmp_path / "validate.log"
 
-    exit_code = main(("--input", str(diagnostic_input), "--output", str(output)))
-
-    assert exit_code == 2
-    result = load_workbook(output, data_only=True)
-    issues = list(result["検証結果"].iter_rows(min_row=2, values_only=True))
-    assert any(row[0] == "UNSUPPORTED_GENERATION_MODE" for row in issues)
-
-
-def test_validate_only_writes_report_without_running_solver(tmp_path: Path) -> None:
-    source = Path("projects/sample/input/時間割入力_サンプル.xlsx")
-    validate_input = tmp_path / "validate.xlsx"
-    workbook = load_workbook(source)
-    settings = workbook["01_基本設定"]
-    for row_number in range(2, settings.max_row + 1):
-        if settings.cell(row_number, 1).value == "solve_mode":
-            settings.cell(row_number, 2, "validate_only")
-    workbook.save(validate_input)
-    output = tmp_path / "validation_result.xlsx"
-
-    exit_code = main(("--input", str(validate_input), "--output", str(output)))
+    exit_code = main(
+        (
+            "--input",
+            "projects/sample/input/時間割入力_サンプル.xlsx",
+            "--output",
+            str(output),
+            "--log",
+            str(log),
+            "--mode",
+            "validate_only",
+        )
+    )
 
     assert exit_code == 0
-    result = load_workbook(output, data_only=True)
-    conditions: dict[str, object] = {
-        str(row[0]): row[1] for row in result["実行条件"].iter_rows(min_row=2, values_only=True)
-    }
-    assert conditions["アプリ状態"] == "VALIDATED"
-    assert conditions["Solver状態"] == "NOT_RUN"
-    assert result["全体時間割"].max_row == 1
+    assert not output.exists()
+    assert log.is_file()
+    assert "Solver完了" not in log.read_text(encoding="utf-8")
+
+
+def test_input_error_does_not_replace_existing_output(tmp_path: Path) -> None:
+    output = tmp_path / "existing.xlsx"
+    output.write_bytes(b"keep-me")
+
+    exit_code = main(
+        (
+            "--input",
+            str(tmp_path / "missing.xlsx"),
+            "--output",
+            str(output),
+        )
+    )
+
+    assert exit_code == 2
+    assert output.read_bytes() == b"keep-me"

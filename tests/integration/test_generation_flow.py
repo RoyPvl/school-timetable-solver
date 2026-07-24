@@ -4,32 +4,64 @@ from pathlib import Path
 
 from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
+from school_timetable_solver.model.input_models import GenerationMode
+from school_timetable_solver.model.result_models import GenerationRequestModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
 )
-from school_timetable_solver.service.result_services import ValidateResultService
+from school_timetable_solver.service.result_services import (
+    BuildTimetableDocumentService,
+    ValidateResultService,
+)
 from school_timetable_solver.service.solver_service import TimetableSolverService
-from school_timetable_solver.validator.input_validators import DEFAULT_INPUT_VALIDATORS
+from school_timetable_solver.validator.input_validators import (
+    DEFAULT_INPUT_VALIDATORS,
+    CapacityFeasibilityValidator,
+)
 
 
-def test_real_excel_can_flow_through_models_solver_and_independent_validation() -> None:
-    read_result = ExcelInputReaderAdapter().read(
-        Path("projects/sample/input/時間割入力_サンプル.xlsx")
-    )
+def test_real_excel_flows_through_validation_solver_result_and_document() -> None:
+    path = Path("projects/sample/input/時間割入力_サンプル.xlsx")
+    read_result = ExcelInputReaderAdapter().read(path)
     assert read_result.input_data is not None
     input_data = read_result.input_data
     assert not [
         issue for validator in DEFAULT_INPUT_VALIDATORS for issue in validator.validate(input_data)
     ]
-
     resolved = RuleResolverService().execute(input_data)
+    assert not resolved.issues
     candidates = CandidateBuilderService().execute(input_data, resolved)
-    solver_result = TimetableSolverService(DEFAULT_HARD_CONSTRAINTS).execute(
-        input_data, resolved, candidates
+    assert not CapacityFeasibilityValidator().validate(
+        input_data,
+        resolved,
+        candidates,
     )
-    report = ValidateResultService().execute(input_data, resolved, solver_result.lessons)
+    request = GenerationRequestModel(
+        path,
+        Path("unused.xlsx"),
+        None,
+        GenerationMode.STRICT,
+        10.0,
+        1,
+    )
+    solver_result = TimetableSolverService(DEFAULT_HARD_CONSTRAINTS).execute(
+        request,
+        input_data,
+        resolved,
+        candidates,
+    )
+    report = ValidateResultService().execute(
+        input_data,
+        resolved,
+        solver_result.lessons,
+    )
+    document = BuildTimetableDocumentService().execute(
+        input_data,
+        solver_result.lessons,
+    )
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
-    assert solver_result.lessons
-    assert report.issues == ()
+    assert len(solver_result.lessons) == 4
+    assert not report.issues
+    assert len(document.dates) == 3

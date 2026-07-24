@@ -14,24 +14,36 @@ from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
 )
-from school_timetable_solver.service.result_services import ValidateResultService
+from school_timetable_solver.service.result_services import (
+    BuildTimetableDocumentService,
+    ValidateResultService,
+)
 from school_timetable_solver.service.solver_service import TimetableSolverService
-from school_timetable_solver.validator.input_validators import DEFAULT_INPUT_VALIDATORS
+from school_timetable_solver.validator.input_validators import (
+    DEFAULT_INPUT_VALIDATORS,
+    CapacityFeasibilityValidator,
+)
 
 
 class ApplicationComposition:
     """Create fully wired application use cases."""
 
-    def create_validate_input_service(self, log_path: Path | None = None) -> ValidateInputService:
+    def create_validate_input_service(
+        self,
+        log_path: Path | None = None,
+    ) -> ValidateInputService:
         ExecutionLogAdapter().configure(log_path)
         return ValidateInputService(
-            ExcelInputReaderAdapter(),
-            DEFAULT_INPUT_VALIDATORS,
-            ExcelTimetableWriterAdapter(self._output_template_path()),
+            input_reader=ExcelInputReaderAdapter(),
+            validators=DEFAULT_INPUT_VALIDATORS,
+            rule_resolver=RuleResolverService(),
+            candidate_builder=CandidateBuilderService(),
+            capacity_validator=CapacityFeasibilityValidator(),
         )
 
     def create_generate_timetable_service(
-        self, log_path: Path | None = None
+        self,
+        log_path: Path | None = None,
     ) -> GenerateTimetableService:
         ExecutionLogAdapter().configure(log_path)
         return GenerateTimetableService(
@@ -39,10 +51,9 @@ class ApplicationComposition:
             validators=DEFAULT_INPUT_VALIDATORS,
             rule_resolver=RuleResolverService(),
             candidate_builder=CandidateBuilderService(),
+            capacity_validator=CapacityFeasibilityValidator(),
             solver_service=TimetableSolverService(DEFAULT_HARD_CONSTRAINTS),
             result_validator=ValidateResultService(),
-            output_writer=ExcelTimetableWriterAdapter(self._output_template_path()),
+            document_builder=BuildTimetableDocumentService(),
+            output_writer=ExcelTimetableWriterAdapter(),
         )
-
-    def _output_template_path(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "templates" / "時間割出力テンプレート.xlsx"
