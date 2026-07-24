@@ -89,7 +89,10 @@ def test_candidate_builder_uses_output_periods_assigned_teacher_and_same_campus_
     }
     assert {candidate.period_id for candidate in q1} <= {"P1", "P2", "P3"}
     assert {candidate.teacher_id for candidate in q1} == {"T1"}
-    assert {candidate.room_id for candidate in q1} == {"R1", "R2"}
+    assert {candidate.campus_id for candidate in q1} == {"C1"}
+    assert len(q1) == len(
+        {(candidate.requirement_id, candidate.target_date, candidate.period_id) for candidate in q1}
+    )
 
 
 def test_candidate_builder_treats_missing_teacher_row_as_unavailable(

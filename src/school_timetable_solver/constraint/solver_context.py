@@ -16,6 +16,7 @@ class SolverContext:
     candidates: tuple[CandidateSlotModel, ...]
     assignment_variables: dict[str, cp_model.IntVar]
     required_counts: dict[str, int]
+    room_capacities: dict[str, int]
     class_daily_limits: dict[tuple[str, date], int | None]
     requirement_daily_limits: dict[str, int | None]
     teacher_daily_limits: dict[tuple[str, date], int | None]

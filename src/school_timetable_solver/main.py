@@ -24,6 +24,13 @@ def _nonnegative_integer(value: str) -> int:
     return parsed
 
 
+def _positive_integer(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("1以上の整数を指定してください")
+    return parsed
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Excel入力から学校時間割を生成します")
     parser.add_argument("--input", required=True, type=Path, help="入力Excelパス")
@@ -47,6 +54,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
         default=1,
         help="乱数シード(0以上の整数)",
     )
+    parser.add_argument(
+        "--num-search-workers",
+        type=_positive_integer,
+        default=8,
+        help="並列探索ワーカー数(1以上、再現性優先時は1)",
+    )
     parsed = parser.parse_args(arguments)
     request = GenerationRequestModel(
         input_path=parsed.input,
@@ -55,6 +68,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         solve_mode=GenerationMode(parsed.mode),
         max_solve_seconds=parsed.max_solve_seconds,
         random_seed=parsed.random_seed,
+        num_search_workers=parsed.num_search_workers,
     )
     try:
         service = ApplicationComposition().create_generate_timetable_service(parsed.log)

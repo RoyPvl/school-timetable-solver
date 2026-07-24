@@ -11,6 +11,7 @@ from school_timetable_solver.service.planning_services import (
     RuleResolverService,
 )
 from school_timetable_solver.service.result_services import (
+    AssignRoomsService,
     BuildTimetableDocumentService,
     ValidateResultService,
 )
@@ -44,6 +45,7 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
         GenerationMode.STRICT,
         10.0,
         1,
+        1,
     )
     solver_result = TimetableSolverService(DEFAULT_HARD_CONSTRAINTS).execute(
         request,
@@ -51,17 +53,18 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
         resolved,
         candidates,
     )
+    lessons = AssignRoomsService().execute(input_data, solver_result.lessons)
     report = ValidateResultService().execute(
         input_data,
         resolved,
-        solver_result.lessons,
+        lessons,
     )
     document = BuildTimetableDocumentService().execute(
         input_data,
-        solver_result.lessons,
+        lessons,
     )
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
-    assert len(solver_result.lessons) == 4
+    assert len(lessons) == 4
     assert not report.issues
     assert len(document.dates) == 3

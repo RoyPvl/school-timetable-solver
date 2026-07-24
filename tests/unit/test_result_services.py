@@ -6,12 +6,33 @@ from datetime import date
 import pytest
 
 from school_timetable_solver.model.input_models import InputDataModel
-from school_timetable_solver.model.result_models import ScheduledLessonModel
+from school_timetable_solver.model.result_models import (
+    ScheduledLessonDraftModel,
+    ScheduledLessonModel,
+)
 from school_timetable_solver.service.planning_services import RuleResolverService
 from school_timetable_solver.service.result_services import (
+    AssignRoomsService,
     BuildTimetableDocumentService,
     ValidateResultService,
 )
+
+
+def _draft(
+    requirement_id: str,
+    class_id: str,
+    campus_id: str = "C1",
+    period_id: str = "P1",
+) -> ScheduledLessonDraftModel:
+    return ScheduledLessonDraftModel(
+        requirement_id=requirement_id,
+        target_date=date(2026, 7, 27),
+        period_id=period_id,
+        teacher_id="T1",
+        campus_id=campus_id,
+        class_id=class_id,
+        subject_id="S1",
+    )
 
 
 def _lesson(
@@ -65,6 +86,37 @@ def test_validate_result_reports_output_date_availability_allowed_period_and_cam
     rule_ids = {issue.rule_id for issue in report.issues}
 
     assert {"H04", "H05", "H06", "H11", "H13", "H14"} <= rule_ids
+
+
+def test_assign_rooms_uses_class_id_and_room_output_order_stably(
+    minimal_input_data: InputDataModel,
+) -> None:
+    assigned = AssignRoomsService().execute(
+        minimal_input_data,
+        (
+            _draft("Q2", "CL2"),
+            _draft("Q1", "CL1"),
+        ),
+    )
+
+    assert [(item.class_id, item.room_id) for item in assigned] == [
+        ("CL1", "R1"),
+        ("CL2", "R2"),
+    ]
+
+
+def test_assign_rooms_rejects_campus_slot_capacity_overflow(
+    minimal_input_data: InputDataModel,
+) -> None:
+    with pytest.raises(ValueError, match="有効教室数を超え"):
+        AssignRoomsService().execute(
+            minimal_input_data,
+            (
+                _draft("Q1", "CL1"),
+                _draft("Q2", "CL2"),
+                _draft("Q3", "CL3"),
+            ),
+        )
 
 
 def test_document_builder_sorts_axes_and_maps_ids_to_display_names(

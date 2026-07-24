@@ -15,6 +15,7 @@ from school_timetable_solver.service.planning_services import (
     RuleResolverService,
 )
 from school_timetable_solver.service.result_services import (
+    AssignRoomsService,
     BuildTimetableDocumentService,
     ValidateResultService,
 )
@@ -53,6 +54,7 @@ class ApplicationComposition:
             candidate_builder=CandidateBuilderService(),
             capacity_validator=CapacityFeasibilityValidator(),
             solver_service=TimetableSolverService(DEFAULT_HARD_CONSTRAINTS),
+            room_assigner=AssignRoomsService(),
             result_validator=ValidateResultService(),
             document_builder=BuildTimetableDocumentService(),
             output_writer=ExcelTimetableWriterAdapter(),

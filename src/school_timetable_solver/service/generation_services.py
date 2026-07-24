@@ -17,6 +17,7 @@ from school_timetable_solver.service.planning_services import (
 )
 from school_timetable_solver.service.protocols import InputReader, TimetableWriter
 from school_timetable_solver.service.result_services import (
+    AssignRoomsService,
     BuildTimetableDocumentService,
     ValidateResultService,
 )
@@ -97,6 +98,7 @@ class GenerateTimetableService:
         candidate_builder: CandidateBuilderService,
         capacity_validator: CapacityFeasibilityValidator,
         solver_service: TimetableSolverService,
+        room_assigner: AssignRoomsService,
         result_validator: ValidateResultService,
         document_builder: BuildTimetableDocumentService,
         output_writer: TimetableWriter,
@@ -107,18 +109,23 @@ class GenerateTimetableService:
         self._candidate_builder = candidate_builder
         self._capacity_validator = capacity_validator
         self._solver_service = solver_service
+        self._room_assigner = room_assigner
         self._result_validator = result_validator
         self._document_builder = document_builder
         self._output_writer = output_writer
 
     def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
         LOGGER.info(
-            "実行開始 input=%s output=%s mode=%s max_seconds=%s random_seed=%s",
+            (
+                "実行開始 input=%s output=%s mode=%s max_seconds=%s "
+                "random_seed=%s num_search_workers=%s"
+            ),
             request.input_path,
             request.output_path,
             request.solve_mode.value,
             request.max_solve_seconds,
             request.random_seed,
+            request.num_search_workers,
         )
         if request.input_path.resolve() == request.output_path.resolve():
             return self._result(
@@ -182,13 +189,31 @@ class GenerateTimetableService:
                 solver_result.statistics.status,
                 exit_code,
                 issues,
-                solver_result.lessons,
-                solver_result.statistics,
+                statistics=solver_result.statistics,
+            )
+        try:
+            lessons = self._room_assigner.execute(input_data, solver_result.lessons)
+        except ValueError as exc:
+            issues.append(
+                ValidationIssueModel(
+                    "H03",
+                    "ERROR",
+                    "room_assignment",
+                    str(exc),
+                )
+            )
+            return self._result(
+                request,
+                input_data,
+                "ROOM_ASSIGNMENT_ERROR",
+                4,
+                issues,
+                statistics=solver_result.statistics,
             )
         validation_report = self._result_validator.execute(
             input_data,
             resolved_rules,
-            solver_result.lessons,
+            lessons,
         )
         issues.extend(validation_report.issues)
         if self._has_errors(issues):
@@ -198,11 +223,11 @@ class GenerateTimetableService:
                 "RESULT_VALIDATION_ERROR",
                 4,
                 issues,
-                solver_result.lessons,
+                lessons,
                 solver_result.statistics,
             )
         try:
-            document = self._document_builder.execute(input_data, solver_result.lessons)
+            document = self._document_builder.execute(input_data, lessons)
         except ValueError as exc:
             issues.append(
                 ValidationIssueModel(
@@ -218,7 +243,7 @@ class GenerateTimetableService:
                 "OUTPUT_DOCUMENT_ERROR",
                 4,
                 issues,
-                solver_result.lessons,
+                lessons,
                 solver_result.statistics,
             )
         self._output_writer.write(document, request.output_path)
@@ -228,7 +253,7 @@ class GenerateTimetableService:
             solver_result.statistics.status,
             0,
             issues,
-            solver_result.lessons,
+            lessons,
             solver_result.statistics,
         )
 

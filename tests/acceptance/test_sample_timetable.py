@@ -25,6 +25,8 @@ def test_sample_cli_generates_one_sheet_verified_matrix_workbook(tmp_path: Path)
             "10",
             "--random-seed",
             "7",
+            "--num-search-workers",
+            "1",
         )
     )
 

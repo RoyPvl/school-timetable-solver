@@ -8,7 +8,8 @@ Excelで管理する開講日、時限、校舎、教室、教師、クラス、
 - `validate_only`による形式・参照・ルール解決・明白な供給不足の検証
 - `strict`による全必要授業数を満たす時間割生成
 - 教師・クラス・教室重複、必要コマ数、日別上限、連続時限、連続登校、同日単一校舎のHard Constraint
-- カレンダー、教師勤務、クラス許可時限、教室所属校舎のCandidate事前除外
+- カレンダー、教師勤務、クラス許可時限、無効校舎のCandidate事前除外
+- 日時決定と教室割当の分離による、同等教室の対称性を除いた探索
 - OR-Toolsとは独立した結果検証
 - `全体`1シートの日付別時間割マトリクス出力
 - テキスト実行ログ
@@ -35,7 +36,8 @@ uv run python -m school_timetable_solver.main \
   --log projects/sample/output/時間割生成_サンプル.log \
   --mode strict \
   --max-solve-seconds 60 \
-  --random-seed 1
+  --random-seed 1 \
+  --num-search-workers 8
 ```
 
 CLI引数:
@@ -48,8 +50,11 @@ CLI引数:
 | `--mode` | `strict` / `validate_only` | `strict` |
 | `--max-solve-seconds` | 正の実数 | `60.0` |
 | `--random-seed` | 0以上の整数 | `1` |
+| `--num-search-workers` | 1以上の並列探索数。再現性優先時は`1` | `8` |
 
 `validate_only`ではSolverを実行せず、時間割Excelも生成しません。入力エラー、候補不足、解なし、結果検証エラー時にも出力Excelを生成・置換しません。
+
+現入力契約では、同一校舎内の有効教室に定員・用途・日時別可用性の差がありません。そのためCP-SATは授業の日時までを決め、同一校舎・日時の授業数を有効教室数以下に制限します。解の後で`class_id`順の授業を`output_order`順の教室へ割り当て、実教室IDを使ってH03を独立再検証します。この変換は教室ごとの差がない現契約に限り、従来の教室別変数と同じ解集合を保ちます。
 
 ## 入力・出力
 

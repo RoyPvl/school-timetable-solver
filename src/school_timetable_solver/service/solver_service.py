@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.hard_constraints import HardConstraint
@@ -7,7 +9,7 @@ from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import InputDataModel
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
-    ScheduledLessonModel,
+    ScheduledLessonDraftModel,
     SolverResultModel,
 )
 from school_timetable_solver.model.solver_models import (
@@ -35,6 +37,7 @@ class TimetableSolverService:
             candidate.candidate_id: model.new_bool_var(f"x__{candidate.candidate_id}")
             for candidate in candidate_result.candidates
         }
+        enabled_campus_ids = {campus.campus_id for campus in input_data.campuses if campus.enabled}
         context = SolverContext(
             model=model,
             candidates=candidate_result.candidates,
@@ -44,6 +47,13 @@ class TimetableSolverService:
                 for requirement in input_data.lesson_requirements
                 if requirement.enabled
             },
+            room_capacities=dict(
+                Counter(
+                    room.campus_id
+                    for room in input_data.rooms
+                    if room.enabled and room.campus_id in enabled_campus_ids
+                )
+            ),
             class_daily_limits={
                 (rule.class_id, rule.target_date): rule.daily_hard_limit
                 for rule in resolved_rules.class_date_rules
@@ -74,22 +84,21 @@ class TimetableSolverService:
             constraint.apply(context)
 
         solver = cp_model.CpSolver()
-        solver.parameters.num_search_workers = 1
+        solver.parameters.num_search_workers = request.num_search_workers
         solver.parameters.random_seed = request.random_seed
         solver.parameters.max_time_in_seconds = request.max_solve_seconds
         status_code = solver.solve(model)
         status = solver.status_name(status_code)
-        lessons: list[ScheduledLessonModel] = []
+        lessons: list[ScheduledLessonDraftModel] = []
         if status in {"OPTIMAL", "FEASIBLE"}:
             for candidate in candidate_result.candidates:
                 if solver.value(variables[candidate.candidate_id]):
                     lessons.append(
-                        ScheduledLessonModel(
+                        ScheduledLessonDraftModel(
                             requirement_id=candidate.requirement_id,
                             target_date=candidate.target_date,
                             period_id=candidate.period_id,
                             teacher_id=candidate.teacher_id,
-                            room_id=candidate.room_id,
                             campus_id=candidate.campus_id,
                             class_id=candidate.class_id,
                             subject_id=candidate.subject_id,
@@ -99,7 +108,8 @@ class TimetableSolverService:
             key=lambda item: (
                 item.target_date,
                 context.period_orders[item.period_id],
-                item.room_id,
+                item.class_id,
+                item.requirement_id,
             )
         )
         return SolverResultModel(

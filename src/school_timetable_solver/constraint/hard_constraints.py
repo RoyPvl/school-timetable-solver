@@ -32,12 +32,29 @@ class TeacherOverlapConstraint:
 
     def apply(self, context: SolverContext) -> None:
         groups: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
+        requirement_ids_by_teacher: dict[str, set[str]] = defaultdict(set)
+        slots_by_teacher: dict[str, set[tuple[date, str]]] = defaultdict(set)
         for candidate in context.candidates:
             groups[(candidate.teacher_id, candidate.target_date, candidate.period_id)].append(
                 context.assignment_variables[candidate.candidate_id]
             )
-        for variables in groups.values():
-            context.model.add(sum(variables) <= 1)
+            requirement_ids_by_teacher[candidate.teacher_id].add(candidate.requirement_id)
+            slots_by_teacher[candidate.teacher_id].add((candidate.target_date, candidate.period_id))
+        saturated_teachers = {
+            teacher_id
+            for teacher_id, slots in slots_by_teacher.items()
+            if sum(
+                context.required_counts[requirement_id]
+                for requirement_id in requirement_ids_by_teacher[teacher_id]
+            )
+            == len(slots)
+        }
+        for (teacher_id, _, _), variables in groups.items():
+            if teacher_id in saturated_teachers:
+                # H06 and H01 imply every available slot is occupied when demand equals supply.
+                context.model.add(sum(variables) == 1)
+            else:
+                context.model.add(sum(variables) <= 1)
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -48,28 +65,45 @@ class ClassOverlapConstraint:
 
     def apply(self, context: SolverContext) -> None:
         groups: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
+        requirement_ids_by_class: dict[str, set[str]] = defaultdict(set)
+        slots_by_class: dict[str, set[tuple[date, str]]] = defaultdict(set)
         for candidate in context.candidates:
             groups[(candidate.class_id, candidate.target_date, candidate.period_id)].append(
                 context.assignment_variables[candidate.candidate_id]
             )
-        for variables in groups.values():
-            context.model.add(sum(variables) <= 1)
+            requirement_ids_by_class[candidate.class_id].add(candidate.requirement_id)
+            slots_by_class[candidate.class_id].add((candidate.target_date, candidate.period_id))
+        saturated_classes = {
+            class_id
+            for class_id, slots in slots_by_class.items()
+            if sum(
+                context.required_counts[requirement_id]
+                for requirement_id in requirement_ids_by_class[class_id]
+            )
+            == len(slots)
+        }
+        for (class_id, _, _), variables in groups.items():
+            if class_id in saturated_classes:
+                # H06 and H02 imply every available slot is occupied when demand equals supply.
+                context.model.add(sum(variables) == 1)
+            else:
+                context.model.add(sum(variables) <= 1)
         context.applied_rule_ids.append(self.rule_id)
 
 
-class RoomOverlapConstraint:
-    """H03: prohibit simultaneous lessons in one room."""
+class CampusRoomCapacityConstraint:
+    """H03: keep concurrent campus lessons within assignable room capacity."""
 
     rule_id = "H03"
 
     def apply(self, context: SolverContext) -> None:
         groups: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
         for candidate in context.candidates:
-            groups[(candidate.room_id, candidate.target_date, candidate.period_id)].append(
+            groups[(candidate.campus_id, candidate.target_date, candidate.period_id)].append(
                 context.assignment_variables[candidate.candidate_id]
             )
-        for variables in groups.values():
-            context.model.add(sum(variables) <= 1)
+        for (campus_id, _, _), variables in groups.items():
+            context.model.add(sum(variables) <= context.room_capacities[campus_id])
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -209,7 +243,7 @@ DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
-    RoomOverlapConstraint(),
+    CampusRoomCapacityConstraint(),
     ClassDailyLimitConstraint(),
     TeacherDailyLimitConstraint(),
     TeacherConsecutivePeriodConstraint(),
@@ -221,7 +255,7 @@ HardConstraint = (
     RequiredLessonCountConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
-    | RoomOverlapConstraint
+    | CampusRoomCapacityConstraint
     | ClassDailyLimitConstraint
     | TeacherDailyLimitConstraint
     | TeacherConsecutivePeriodConstraint

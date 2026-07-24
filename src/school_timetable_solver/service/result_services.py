@@ -12,12 +12,88 @@ from school_timetable_solver.model.result_models import (
     OutputLessonModel,
     OutputPeriodModel,
     RoomColumnModel,
+    ScheduledLessonDraftModel,
     ScheduledLessonModel,
     TimetableDocumentModel,
     ValidationIssueModel,
     ValidationReportModel,
 )
 from school_timetable_solver.model.solver_models import ResolvedRuleSetModel
+
+
+class AssignRoomsService:
+    """Assign homogeneous campus rooms deterministically after temporal solving."""
+
+    def execute(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonDraftModel, ...],
+    ) -> tuple[ScheduledLessonModel, ...]:
+        campus_orders = {
+            campus.campus_id: campus.output_order
+            for campus in input_data.campuses
+            if campus.enabled
+        }
+        room_orders: dict[str, int] = {}
+        rooms_by_campus: dict[str, list[str]] = defaultdict(list)
+        for room in sorted(input_data.rooms, key=lambda item: item.output_order):
+            if room.enabled and room.campus_id in campus_orders:
+                rooms_by_campus[room.campus_id].append(room.room_id)
+                room_orders[room.room_id] = room.output_order
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        lessons_by_slot: dict[tuple[str, date, str], list[ScheduledLessonDraftModel]] = defaultdict(
+            list
+        )
+        for lesson in lessons:
+            lessons_by_slot[(lesson.campus_id, lesson.target_date, lesson.period_id)].append(lesson)
+
+        assigned: list[ScheduledLessonModel] = []
+        for (campus_id, target_date, period_id), slot_lessons in sorted(
+            lessons_by_slot.items(),
+            key=lambda item: (
+                item[0][1],
+                period_orders[item[0][2]],
+                campus_orders[item[0][0]],
+            ),
+        ):
+            room_ids = rooms_by_campus.get(campus_id, ())
+            if len(slot_lessons) > len(room_ids):
+                raise ValueError(
+                    "同一校舎・日時の授業数が有効教室数を超えています: "
+                    f"{campus_id}/{target_date}/{period_id} "
+                    f"lessons={len(slot_lessons)}, rooms={len(room_ids)}"
+                )
+            ordered_lessons = sorted(
+                slot_lessons,
+                key=lambda item: (
+                    item.class_id,
+                    item.requirement_id,
+                    item.teacher_id,
+                    item.subject_id,
+                ),
+            )
+            for lesson, room_id in zip(ordered_lessons, room_ids, strict=False):
+                assigned.append(
+                    ScheduledLessonModel(
+                        requirement_id=lesson.requirement_id,
+                        target_date=lesson.target_date,
+                        period_id=lesson.period_id,
+                        teacher_id=lesson.teacher_id,
+                        room_id=room_id,
+                        campus_id=lesson.campus_id,
+                        class_id=lesson.class_id,
+                        subject_id=lesson.subject_id,
+                    )
+                )
+        assigned.sort(
+            key=lambda item: (
+                item.target_date,
+                period_orders[item.period_id],
+                campus_orders[item.campus_id],
+                room_orders[item.room_id],
+            )
+        )
+        return tuple(assigned)
 
 
 class ValidateResultService:

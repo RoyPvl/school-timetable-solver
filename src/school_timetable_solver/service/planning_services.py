@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from datetime import date
 
 from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
-from school_timetable_solver.model.master_models import ClassModel, RoomModel, TeacherModel
+from school_timetable_solver.model.master_models import ClassModel, TeacherModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
     CandidateRejectionSummaryModel,
@@ -310,10 +310,6 @@ class CandidateBuilderService:
         campuses = {item.campus_id: item for item in input_data.campuses}
         teachers = {item.teacher_id: item for item in input_data.teachers}
         subjects = {item.subject_id: item for item in input_data.subjects}
-        rooms_by_campus: dict[str, list[RoomModel]] = defaultdict(list)
-        for room in input_data.rooms:
-            if room.enabled:
-                rooms_by_campus[room.campus_id].append(room)
         availability = {
             (item.teacher_id, item.target_date, item.period_id): item.available
             for item in input_data.teacher_availability
@@ -334,50 +330,42 @@ class CandidateBuilderService:
             if not (class_model.enabled and teacher.enabled and campus.enabled and subject.enabled):
                 rejection_counts[(requirement.requirement_id, "H14")] += 1
                 continue
-            eligible_rooms = [
-                room
-                for room in rooms_by_campus[class_model.campus_id]
-                if campuses[room.campus_id].enabled
-            ]
             for calendar_day in output_days:
                 class_rule = class_rules[(class_model.class_id, calendar_day.target_date)]
                 allowed_periods = set(class_rule.allowed_period_ids or ())
                 for period in ordered_periods:
                     if period.period_id not in calendar_day.enabled_period_ids:
-                        rejection_counts[(requirement.requirement_id, "H04")] += len(eligible_rooms)
+                        rejection_counts[(requirement.requirement_id, "H04")] += 1
                         continue
                     if period.period_id not in allowed_periods:
-                        rejection_counts[(requirement.requirement_id, "H13")] += len(eligible_rooms)
+                        rejection_counts[(requirement.requirement_id, "H13")] += 1
                         continue
                     if not availability.get(
                         (teacher.teacher_id, calendar_day.target_date, period.period_id),
                         False,
                     ):
-                        rejection_counts[(requirement.requirement_id, "H05")] += len(eligible_rooms)
+                        rejection_counts[(requirement.requirement_id, "H05")] += 1
                         continue
-                    for room in eligible_rooms:
-                        candidate_id = "__".join(
-                            (
-                                requirement.requirement_id,
-                                calendar_day.target_date.isoformat(),
-                                period.period_id,
-                                teacher.teacher_id,
-                                room.room_id,
-                            )
+                    candidate_id = "__".join(
+                        (
+                            requirement.requirement_id,
+                            calendar_day.target_date.isoformat(),
+                            period.period_id,
+                            teacher.teacher_id,
                         )
-                        candidates.append(
-                            CandidateSlotModel(
-                                candidate_id=candidate_id,
-                                requirement_id=requirement.requirement_id,
-                                target_date=calendar_day.target_date,
-                                period_id=period.period_id,
-                                teacher_id=teacher.teacher_id,
-                                room_id=room.room_id,
-                                campus_id=class_model.campus_id,
-                                class_id=class_model.class_id,
-                                subject_id=requirement.subject_id,
-                            )
+                    )
+                    candidates.append(
+                        CandidateSlotModel(
+                            candidate_id=candidate_id,
+                            requirement_id=requirement.requirement_id,
+                            target_date=calendar_day.target_date,
+                            period_id=period.period_id,
+                            teacher_id=teacher.teacher_id,
+                            campus_id=class_model.campus_id,
+                            class_id=class_model.class_id,
+                            subject_id=requirement.subject_id,
                         )
+                    )
         summaries = tuple(
             CandidateRejectionSummaryModel(requirement_id, rule_id, rejected_count)
             for (requirement_id, rule_id), rejected_count in sorted(rejection_counts.items())

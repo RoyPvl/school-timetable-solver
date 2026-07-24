@@ -45,8 +45,19 @@ class ScheduledLessonModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduledLessonDraftModel:
+    requirement_id: str
+    target_date: date
+    period_id: str
+    teacher_id: str
+    campus_id: str
+    class_id: str
+    subject_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class SolverResultModel:
-    lessons: tuple[ScheduledLessonModel, ...]
+    lessons: tuple[ScheduledLessonDraftModel, ...]
     statistics: SolverStatisticsModel
 
 
@@ -58,6 +69,7 @@ class GenerationRequestModel:
     solve_mode: GenerationMode
     max_solve_seconds: float
     random_seed: int
+    num_search_workers: int
 
 
 @dataclass(frozen=True, slots=True)

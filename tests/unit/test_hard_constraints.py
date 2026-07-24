@@ -6,8 +6,10 @@ import pytest
 from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.hard_constraints import (
+    CampusRoomCapacityConstraint,
     ClassOverlapConstraint,
     RequiredLessonCountConstraint,
+    TeacherOverlapConstraint,
     TeacherSingleCampusPerDayConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
@@ -31,7 +33,6 @@ def _candidate(
         target_date,
         period_id,
         teacher_id,
-        f"R_{campus_id}_{period_id}",
         campus_id,
         class_id,
         "S1",
@@ -49,6 +50,7 @@ def _context(candidates: tuple[CandidateSlotModel, ...]) -> SolverContext:
         candidates=candidates,
         assignment_variables=variables,
         required_counts={candidate.requirement_id: 1 for candidate in candidates},
+        room_capacities={"C1": 2, "C2": 2},
         class_daily_limits={
             (candidate.class_id, candidate.target_date): 6 for candidate in candidates
         },
@@ -138,3 +140,45 @@ def test_class_overlap_constraint_rejects_same_class_slot() -> None:
     ClassOverlapConstraint().apply(context)
 
     assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h03_campus_room_capacity_rejects_more_lessons_than_rooms() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
+        _candidate("Q2__1", "T2", DAY_ONE, "C1", "P1", "CL2"),
+        _candidate("Q3__1", "T3", DAY_ONE, "C1", "P1", "CL3"),
+    )
+    context = _context(candidates)
+    CampusRoomCapacityConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_teacher_overlap_forces_each_slot_only_when_demand_equals_slot_supply() -> None:
+    saturated = _context(
+        (
+            _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
+            _candidate("Q2__1", "T1", DAY_ONE, "C1", "P2", "CL2"),
+        )
+    )
+    TeacherOverlapConstraint().apply(saturated)
+    saturated.model.add(saturated.assignment_variables["Q1__1"] == 0)
+    saturated_solver = cp_model.CpSolver()
+
+    assert saturated_solver.status_name(saturated_solver.solve(saturated.model)) == "INFEASIBLE"
+
+    unsaturated = _context(
+        (
+            _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
+            _candidate("Q1__2", "T1", DAY_ONE, "C1", "P2", "CL1"),
+        )
+    )
+    TeacherOverlapConstraint().apply(unsaturated)
+    for variable in unsaturated.assignment_variables.values():
+        unsaturated.model.add(variable == 0)
+    unsaturated_solver = cp_model.CpSolver()
+
+    assert unsaturated_solver.status_name(unsaturated_solver.solve(unsaturated.model)) in {
+        "OPTIMAL",
+        "FEASIBLE",
+    }

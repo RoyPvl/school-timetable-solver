@@ -44,7 +44,6 @@ class CandidateSlotModel:
     target_date: date
     period_id: str
     teacher_id: str
-    room_id: str
     campus_id: str
     class_id: str
     subject_id: str
