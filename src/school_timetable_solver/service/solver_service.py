@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.hard_constraints import HardConstraint
+from school_timetable_solver.constraint.soft_constraints import SoftConstraint
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import InputDataModel
 from school_timetable_solver.model.result_models import (
@@ -22,8 +23,13 @@ from school_timetable_solver.model.solver_models import (
 class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
-    def __init__(self, hard_constraints: tuple[HardConstraint, ...]) -> None:
+    def __init__(
+        self,
+        hard_constraints: tuple[HardConstraint, ...],
+        soft_constraints: tuple[SoftConstraint, ...] = (),
+    ) -> None:
         self._hard_constraints = hard_constraints
+        self._soft_constraints = soft_constraints
 
     def execute(
         self,
@@ -82,15 +88,59 @@ class TimetableSolverService:
         )
         for constraint in self._hard_constraints:
             constraint.apply(context)
+        soft_constraints_by_priority: dict[int, list[SoftConstraint]] = defaultdict(list)
+        for constraint in self._soft_constraints:
+            soft_constraints_by_priority[constraint.priority].append(constraint)
 
-        solver = cp_model.CpSolver()
-        solver.parameters.num_search_workers = request.num_search_workers
-        solver.parameters.random_seed = request.random_seed
-        solver.parameters.max_time_in_seconds = request.max_solve_seconds
-        status_code = solver.solve(model)
-        status = solver.status_name(status_code)
+        priorities = sorted(soft_constraints_by_priority, reverse=True)
+        total_wall_time = 0.0
+        solver: cp_model.CpSolver | None = None
+        status = "UNKNOWN"
+        if not priorities:
+            solver = self._new_solver(request, request.max_solve_seconds)
+            status = solver.status_name(solver.solve(model))
+            total_wall_time = solver.wall_time
+        else:
+            remaining_seconds = request.max_solve_seconds
+            for priority_index, priority in enumerate(priorities):
+                for constraint in soft_constraints_by_priority[priority]:
+                    constraint.apply(context)
+                priority_terms = context.penalty_terms_by_priority.get(priority, [])
+                model.minimize(sum(priority_terms))
+                model.clear_hints()
+                if solver is None:
+                    for penalty in priority_terms:
+                        model.add_hint(penalty, 0)
+                else:
+                    for variable in variables.values():
+                        model.add_hint(variable, solver.value(variable))
+
+                is_last_priority = priority_index == len(priorities) - 1
+                phase_seconds = remaining_seconds if is_last_priority else remaining_seconds * 0.9
+                phase_solver = self._new_solver(request, phase_seconds)
+                phase_status = phase_solver.status_name(phase_solver.solve(model))
+                total_wall_time += phase_solver.wall_time
+                remaining_seconds = max(
+                    request.max_solve_seconds - total_wall_time,
+                    0.001,
+                )
+                if phase_status not in {"OPTIMAL", "FEASIBLE"}:
+                    if solver is None:
+                        status = phase_status
+                    break
+
+                solver = phase_solver
+                status = phase_status
+                if not is_last_priority:
+                    achieved_penalty = sum(solver.value(penalty) for penalty in priority_terms)
+                    model.add(sum(priority_terms) <= achieved_penalty)
+                    for variable in variables.values():
+                        model.add(variable == solver.value(variable))
+            if len(priorities) > 1 and status == "OPTIMAL":
+                status = "FEASIBLE"
+
         lessons: list[ScheduledLessonDraftModel] = []
-        if status in {"OPTIMAL", "FEASIBLE"}:
+        if solver is not None and status in {"OPTIMAL", "FEASIBLE"}:
             for candidate in candidate_result.candidates:
                 if solver.value(variables[candidate.candidate_id]):
                     lessons.append(
@@ -102,6 +152,15 @@ class TimetableSolverService:
                             campus_id=candidate.campus_id,
                             class_id=candidate.class_id,
                             subject_id=candidate.subject_id,
+                            room_index=solver.value(
+                                context.class_room_variables[
+                                    (
+                                        candidate.campus_id,
+                                        candidate.target_date,
+                                        candidate.class_id,
+                                    )
+                                ]
+                            ),
                         )
                     )
         lessons.sort(
@@ -116,8 +175,19 @@ class TimetableSolverService:
             lessons=tuple(lessons),
             statistics=SolverStatisticsModel(
                 status=status,
-                wall_time_seconds=solver.wall_time,
+                wall_time_seconds=total_wall_time,
                 variable_count=len(variables),
                 constraint_rule_ids=tuple(context.applied_rule_ids),
             ),
         )
+
+    def _new_solver(
+        self,
+        request: GenerationRequestModel,
+        max_solve_seconds: float,
+    ) -> cp_model.CpSolver:
+        solver = cp_model.CpSolver()
+        solver.parameters.num_search_workers = request.num_search_workers
+        solver.parameters.random_seed = request.random_seed
+        solver.parameters.max_time_in_seconds = max_solve_seconds
+        return solver

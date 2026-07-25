@@ -6,6 +6,7 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 from school_timetable_solver.adapter.excel_output_adapter import ExcelTimetableWriterAdapter
 from school_timetable_solver.adapter.execution_log_adapter import ExecutionLogAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
+from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 from school_timetable_solver.service.generation_services import (
     GenerateTimetableService,
     ValidateInputService,
@@ -53,7 +54,10 @@ class ApplicationComposition:
             rule_resolver=RuleResolverService(),
             candidate_builder=CandidateBuilderService(),
             capacity_validator=CapacityFeasibilityValidator(),
-            solver_service=TimetableSolverService(DEFAULT_HARD_CONSTRAINTS),
+            solver_service=TimetableSolverService(
+                DEFAULT_HARD_CONSTRAINTS,
+                DEFAULT_SOFT_CONSTRAINTS,
+            ),
             room_assigner=AssignRoomsService(),
             result_validator=ValidateResultService(),
             document_builder=BuildTimetableDocumentService(),

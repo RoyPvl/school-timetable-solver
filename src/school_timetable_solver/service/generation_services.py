@@ -196,7 +196,7 @@ class GenerateTimetableService:
         except ValueError as exc:
             issues.append(
                 ValidationIssueModel(
-                    "H03",
+                    "H15",
                     "ERROR",
                     "room_assignment",
                     str(exc),
@@ -267,7 +267,15 @@ class GenerateTimetableService:
         lessons: tuple[ScheduledLessonModel, ...] = (),
         statistics: SolverStatisticsModel | None = None,
     ) -> GenerationResultModel:
-        LOGGER.info("実行終了 status=%s exit_code=%d errors=%d", status, exit_code, len(issues))
+        error_count = sum(issue.severity == "ERROR" for issue in issues)
+        warning_count = sum(issue.severity == "WARNING" for issue in issues)
+        LOGGER.info(
+            "実行終了 status=%s exit_code=%d errors=%d warnings=%d",
+            status,
+            exit_code,
+            error_count,
+            warning_count,
+        )
         return GenerationResultModel(
             status=status,
             exit_code=exit_code,

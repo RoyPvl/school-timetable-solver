@@ -22,7 +22,7 @@ from school_timetable_solver.model.solver_models import ResolvedRuleSetModel
 
 
 class AssignRoomsService:
-    """Assign homogeneous campus rooms deterministically after temporal solving."""
+    """Map anonymous solver room indexes to stable campus room IDs."""
 
     def execute(
         self,
@@ -41,50 +41,28 @@ class AssignRoomsService:
                 rooms_by_campus[room.campus_id].append(room.room_id)
                 room_orders[room.room_id] = room.output_order
         period_orders = {period.period_id: period.output_order for period in input_data.periods}
-        lessons_by_slot: dict[tuple[str, date, str], list[ScheduledLessonDraftModel]] = defaultdict(
-            list
-        )
-        for lesson in lessons:
-            lessons_by_slot[(lesson.campus_id, lesson.target_date, lesson.period_id)].append(lesson)
-
         assigned: list[ScheduledLessonModel] = []
-        for (campus_id, target_date, period_id), slot_lessons in sorted(
-            lessons_by_slot.items(),
-            key=lambda item: (
-                item[0][1],
-                period_orders[item[0][2]],
-                campus_orders[item[0][0]],
-            ),
-        ):
-            room_ids = rooms_by_campus.get(campus_id, ())
-            if len(slot_lessons) > len(room_ids):
+        for lesson in lessons:
+            room_ids = rooms_by_campus.get(lesson.campus_id, ())
+            if not 0 <= lesson.room_index < len(room_ids):
                 raise ValueError(
-                    "同一校舎・日時の授業数が有効教室数を超えています: "
-                    f"{campus_id}/{target_date}/{period_id} "
-                    f"lessons={len(slot_lessons)}, rooms={len(room_ids)}"
+                    "匿名教室番号が有効教室の範囲外です: "
+                    f"{lesson.campus_id}/{lesson.target_date}/{lesson.class_id} "
+                    f"room_index={lesson.room_index}, rooms={len(room_ids)}"
                 )
-            ordered_lessons = sorted(
-                slot_lessons,
-                key=lambda item: (
-                    item.class_id,
-                    item.requirement_id,
-                    item.teacher_id,
-                    item.subject_id,
-                ),
+            room_id = room_ids[lesson.room_index]
+            assigned.append(
+                ScheduledLessonModel(
+                    requirement_id=lesson.requirement_id,
+                    target_date=lesson.target_date,
+                    period_id=lesson.period_id,
+                    teacher_id=lesson.teacher_id,
+                    room_id=room_id,
+                    campus_id=lesson.campus_id,
+                    class_id=lesson.class_id,
+                    subject_id=lesson.subject_id,
+                )
             )
-            for lesson, room_id in zip(ordered_lessons, room_ids, strict=False):
-                assigned.append(
-                    ScheduledLessonModel(
-                        requirement_id=lesson.requirement_id,
-                        target_date=lesson.target_date,
-                        period_id=lesson.period_id,
-                        teacher_id=lesson.teacher_id,
-                        room_id=room_id,
-                        campus_id=lesson.campus_id,
-                        class_id=lesson.class_id,
-                        subject_id=lesson.subject_id,
-                    )
-                )
         assigned.sort(
             key=lambda item: (
                 item.target_date,
@@ -113,6 +91,10 @@ class ValidateResultService:
         self._validate_consecutive_periods(input_data, resolved_rules, lessons, issues)
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
         self._validate_single_campus_per_day(lessons, issues)
+        self._validate_class_room_continuity(lessons, issues)
+        self._validate_class_long_internal_gaps(input_data, lessons, issues)
+        self._report_room_change_gap_preference(input_data, lessons, issues)
+        self._report_class_daily_contiguity_preference(input_data, lessons, issues)
         return ValidationReportModel(tuple(issues))
 
     def _validate_required_counts(
@@ -364,6 +346,137 @@ class ValidateResultService:
                         "H11",
                         str(key),
                         f"同一教師・同一日に複数校舎へ配置されています: {sorted(campus_ids)}",
+                    )
+                )
+
+    def _validate_class_room_continuity(
+        self,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        rooms_by_class_day: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for lesson in lessons:
+            rooms_by_class_day[(lesson.class_id, lesson.target_date)].add(lesson.room_id)
+
+        for key, room_ids in rooms_by_class_day.items():
+            if len(room_ids) > 1:
+                issues.append(
+                    self._issue(
+                        "H15",
+                        str(key),
+                        f"同一クラス・同一日に複数教室へ配置されています: {sorted(room_ids)}",
+                    )
+                )
+
+    def _validate_class_long_internal_gaps(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        period_indexes = {
+            period.period_id: index
+            for index, period in enumerate(
+                sorted(input_data.periods, key=lambda item: item.output_order)
+            )
+        }
+        periods_by_class_day: dict[tuple[str, date], set[int]] = defaultdict(set)
+        for lesson in lessons:
+            period_index = period_indexes.get(lesson.period_id)
+            if period_index is not None:
+                periods_by_class_day[(lesson.class_id, lesson.target_date)].add(period_index)
+
+        for key, period_index_set in periods_by_class_day.items():
+            ordered = sorted(period_index_set)
+            long_gaps = [
+                (left_index + 1, right_index + 1, right_index - left_index - 1)
+                for left_index, right_index in pairwise(ordered)
+                if right_index - left_index - 1 >= 2
+            ]
+            if long_gaps:
+                issues.append(
+                    self._issue(
+                        "H16",
+                        str(key),
+                        (
+                            "同一クラスの授業間に2コマ以上連続する空きがあります: "
+                            f"授業間={long_gaps}"
+                        ),
+                    )
+                )
+
+    def _report_room_change_gap_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        ordered_periods = tuple(sorted(input_data.periods, key=lambda item: item.output_order))
+        classes_by_room_day_period = {
+            (lesson.room_id, lesson.target_date, lesson.period_id): lesson.class_id
+            for lesson in lessons
+        }
+        room_days = {(lesson.room_id, lesson.target_date) for lesson in lessons}
+        for room_id, target_date in room_days:
+            for left_period, right_period in pairwise(ordered_periods):
+                left_class_id = classes_by_room_day_period.get(
+                    (room_id, target_date, left_period.period_id)
+                )
+                right_class_id = classes_by_room_day_period.get(
+                    (room_id, target_date, right_period.period_id)
+                )
+                if (
+                    left_class_id is not None
+                    and right_class_id is not None
+                    and left_class_id != right_class_id
+                ):
+                    issues.append(
+                        ValidationIssueModel(
+                            "S10",
+                            "WARNING",
+                            (
+                                f"{room_id}/{target_date}/"
+                                f"{left_period.period_id}/{right_period.period_id}"
+                            ),
+                            (
+                                "同一教室を空き時限なしで別クラスへ交替しています: "
+                                f"{left_class_id}->{right_class_id}"
+                            ),
+                        )
+                    )
+
+    def _report_class_daily_contiguity_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        periods_by_class_day: dict[tuple[str, date], set[int]] = defaultdict(set)
+        for lesson in lessons:
+            period_order = period_orders.get(lesson.period_id)
+            if period_order is not None:
+                periods_by_class_day[(lesson.class_id, lesson.target_date)].add(period_order)
+
+        for key, period_order_set in periods_by_class_day.items():
+            if len(period_order_set) < 2:
+                continue
+            ordered = sorted(period_order_set)
+            internal_gaps = [
+                period_order
+                for period_order in range(ordered[0] + 1, ordered[-1])
+                if period_order not in period_order_set
+            ]
+            if internal_gaps:
+                issues.append(
+                    ValidationIssueModel(
+                        "S11",
+                        "WARNING",
+                        str(key),
+                        (
+                            "同一クラスの最初と最後の授業の間に空き時限があります: "
+                            f"授業時限={ordered}, 空き時限={internal_gaps}"
+                        ),
                     )
                 )
 

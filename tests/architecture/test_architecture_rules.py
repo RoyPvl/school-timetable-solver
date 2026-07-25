@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
+from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 
 SOURCE_ROOT = Path("src/school_timetable_solver")
 FORBIDDEN_FILES = {
@@ -99,5 +100,14 @@ def test_hard_constraint_registration_has_unique_formal_rule_ids() -> None:
         "H09",
         "H10",
         "H11",
+        "H15",
+        "H16",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_HARD_CONSTRAINTS)
+
+
+def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
+    rule_ids = [constraint.rule_id for constraint in DEFAULT_SOFT_CONSTRAINTS]
+    assert len(rule_ids) == len(set(rule_ids))
+    assert set(rule_ids) == {"S10", "S11"}
+    assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)

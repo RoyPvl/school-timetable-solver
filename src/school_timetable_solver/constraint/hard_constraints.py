@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
-from itertools import pairwise
+from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
 
@@ -104,6 +104,127 @@ class CampusRoomCapacityConstraint:
             )
         for (campus_id, _, _), variables in groups.items():
             context.model.add(sum(variables) <= context.room_capacities[campus_id])
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassRoomContinuityConstraint:
+    """H15: assign every lesson of one class and date to one anonymous room."""
+
+    rule_id = "H15"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_day: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        variables_by_class_slot: dict[
+            tuple[str, date, str, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variable = context.assignment_variables[candidate.candidate_id]
+            variables_by_class_day[
+                (candidate.campus_id, candidate.target_date, candidate.class_id)
+            ].append(variable)
+            variables_by_class_slot[
+                (
+                    candidate.campus_id,
+                    candidate.target_date,
+                    candidate.class_id,
+                    candidate.period_id,
+                )
+            ].append(variable)
+
+        class_days_by_campus_day: dict[
+            tuple[str, date],
+            list[tuple[str, cp_model.IntVar, cp_model.IntVar]],
+        ] = defaultdict(list)
+        for key, variables in variables_by_class_day.items():
+            campus_id, target_date, class_id = key
+            presence = context.model.new_bool_var(
+                f"class_room_day__{class_id}__{target_date.isoformat()}"
+            )
+            context.model.add_max_equality(presence, variables)
+            room = context.model.new_int_var(
+                0,
+                context.room_capacities[campus_id] - 1,
+                f"class_room__{class_id}__{target_date.isoformat()}",
+            )
+            context.model.add(room == 0).only_enforce_if(presence.negated())
+            context.class_room_variables[key] = room
+            context.class_room_presence_variables[key] = presence
+            class_days_by_campus_day[(campus_id, target_date)].append((class_id, presence, room))
+
+        for class_days in class_days_by_campus_day.values():
+            previous_presence_variables: list[cp_model.IntVar] = []
+            for _, presence, room in sorted(class_days):
+                if previous_presence_variables:
+                    context.model.add(room <= sum(previous_presence_variables)).only_enforce_if(
+                        presence
+                    )
+                else:
+                    context.model.add(room == 0).only_enforce_if(presence)
+                previous_presence_variables.append(presence)
+
+        classes_by_campus_slot: dict[
+            tuple[str, date, str],
+            list[tuple[str, cp_model.IntVar, cp_model.IntVar]],
+        ] = defaultdict(list)
+        for key, variables in variables_by_class_slot.items():
+            campus_id, target_date, class_id, period_id = key
+            slot = context.model.new_bool_var(
+                f"class_slot__{class_id}__{target_date.isoformat()}__{period_id}"
+            )
+            context.model.add_max_equality(slot, variables)
+            context.class_slot_variables[key] = slot
+            classes_by_campus_slot[(campus_id, target_date, period_id)].append(
+                (
+                    class_id,
+                    slot,
+                    context.class_room_variables[(campus_id, target_date, class_id)],
+                )
+            )
+
+        for classes in classes_by_campus_slot.values():
+            for left, right in combinations(classes, 2):
+                context.model.add(left[2] != right[2]).only_enforce_if([left[1], right[1]])
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassLongInternalGapConstraint:
+    """H16: forbid two consecutive empty periods between one class's lessons."""
+
+    rule_id = "H16"
+
+    def apply(self, context: SolverContext) -> None:
+        ordered_period_ids = tuple(
+            period_id
+            for period_id, _ in sorted(
+                context.period_orders.items(),
+                key=lambda item: item[1],
+            )
+        )
+        for campus_id, target_date, class_id in context.class_room_variables:
+            slots = tuple(
+                context.class_slot_variables.get((campus_id, target_date, class_id, period_id))
+                for period_id in ordered_period_ids
+            )
+            for first_gap_index in range(1, len(slots) - 2):
+                second_gap_index = first_gap_index + 1
+                gap_slots = tuple(
+                    slot
+                    for slot in (slots[first_gap_index], slots[second_gap_index])
+                    if slot is not None
+                )
+                for left_index in range(first_gap_index):
+                    left_slot = slots[left_index]
+                    if left_slot is None:
+                        continue
+                    for right_index in range(second_gap_index + 1, len(slots)):
+                        right_slot = slots[right_index]
+                        if right_slot is None:
+                            continue
+                        context.model.add(left_slot + right_slot - sum(gap_slots) <= 1)
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -244,6 +365,8 @@ DEFAULT_HARD_CONSTRAINTS = (
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
     CampusRoomCapacityConstraint(),
+    ClassRoomContinuityConstraint(),
+    ClassLongInternalGapConstraint(),
     ClassDailyLimitConstraint(),
     TeacherDailyLimitConstraint(),
     TeacherConsecutivePeriodConstraint(),
@@ -256,6 +379,8 @@ HardConstraint = (
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
     | CampusRoomCapacityConstraint
+    | ClassRoomContinuityConstraint
+    | ClassLongInternalGapConstraint
     | ClassDailyLimitConstraint
     | TeacherDailyLimitConstraint
     | TeacherConsecutivePeriodConstraint

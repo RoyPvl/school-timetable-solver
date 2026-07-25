@@ -4,6 +4,7 @@ from pathlib import Path
 
 from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
+from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 from school_timetable_solver.model.input_models import GenerationMode
 from school_timetable_solver.model.result_models import GenerationRequestModel
 from school_timetable_solver.service.planning_services import (
@@ -47,7 +48,10 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
         1,
         1,
     )
-    solver_result = TimetableSolverService(DEFAULT_HARD_CONSTRAINTS).execute(
+    solver_result = TimetableSolverService(
+        DEFAULT_HARD_CONSTRAINTS,
+        DEFAULT_SOFT_CONSTRAINTS,
+    ).execute(
         request,
         input_data,
         resolved,

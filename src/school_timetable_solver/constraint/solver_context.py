@@ -26,3 +26,11 @@ class SolverContext:
     calendar_dates: tuple[date, ...]
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
+    class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
+    class_room_presence_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(
+        default_factory=dict
+    )
+    class_slot_variables: dict[tuple[str, date, str, str], cp_model.IntVar] = field(
+        default_factory=dict
+    )
+    penalty_terms_by_priority: dict[int, list[cp_model.IntVar]] = field(default_factory=dict)

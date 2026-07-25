@@ -53,6 +53,7 @@ class ScheduledLessonDraftModel:
     campus_id: str
     class_id: str
     subject_id: str
+    room_index: int
 
 
 @dataclass(frozen=True, slots=True)
