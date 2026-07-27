@@ -34,3 +34,7 @@ class SolverContext:
         default_factory=dict
     )
     penalty_terms_by_priority: dict[int, list[cp_model.IntVar]] = field(default_factory=dict)
+    penalty_term_groups_by_priority: dict[
+        int,
+        dict[tuple[str, ...], list[cp_model.IntVar]],
+    ] = field(default_factory=dict)

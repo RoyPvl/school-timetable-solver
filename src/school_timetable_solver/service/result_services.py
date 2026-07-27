@@ -102,6 +102,8 @@ class ValidateResultService:
             lessons,
             issues,
         )
+        self._report_class_subject_daily_repeat_preference(lessons, issues)
+        self._report_class_subject_double_then_next_day_preference(lessons, issues)
         return ValidationReportModel(tuple(issues))
 
     def _validate_required_counts(
@@ -540,6 +542,55 @@ class ValidateResultService:
                         ),
                     )
                 )
+
+    def _report_class_subject_daily_repeat_preference(
+        self,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        lesson_counts = Counter(
+            (lesson.class_id, lesson.subject_id, lesson.target_date) for lesson in lessons
+        )
+        for key, lesson_count in lesson_counts.items():
+            if lesson_count < 2:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S14",
+                    "WARNING",
+                    str(key),
+                    (
+                        "同一クラスの同じ教科がこの日に2コマ以上配置されています: "
+                        f"コマ数={lesson_count}"
+                    ),
+                )
+            )
+
+    def _report_class_subject_double_then_next_day_preference(
+        self,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        lesson_counts = Counter(
+            (lesson.class_id, lesson.subject_id, lesson.target_date) for lesson in lessons
+        )
+        for (class_id, subject_id, target_date), lesson_count in lesson_counts.items():
+            if lesson_count < 2:
+                continue
+            next_date = target_date + timedelta(days=1)
+            if lesson_counts[(class_id, subject_id, next_date)] == 0:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S15",
+                    "WARNING",
+                    f"{class_id}/{subject_id}/{target_date}/{next_date}",
+                    (
+                        "同日2コマ以上の翌日にも同じ教科が配置されています: "
+                        f"同日コマ数={lesson_count}"
+                    ),
+                )
+            )
 
     def _lesson_target(self, lesson: ScheduledLessonModel) -> str:
         return f"{lesson.requirement_id}/{lesson.target_date}/{lesson.period_id}/{lesson.room_id}"

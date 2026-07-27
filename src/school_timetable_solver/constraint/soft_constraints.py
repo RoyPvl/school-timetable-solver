@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
@@ -126,6 +126,146 @@ class ClassDailyContiguityPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassSubjectDailyRepeatPreferenceConstraint:
+    """S14: minimize same-day lesson pairs per class and subject."""
+
+    rule_id = "S14"
+    priority = 30
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_subject_day: dict[
+            tuple[str, str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        requirement_ids_by_class_subject_day: dict[
+            tuple[str, str, date],
+            set[str],
+        ] = defaultdict(set)
+        for candidate in context.candidates:
+            key = (
+                candidate.class_id,
+                candidate.subject_id,
+                candidate.target_date,
+            )
+            variables_by_class_subject_day[key].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+            requirement_ids_by_class_subject_day[key].add(candidate.requirement_id)
+
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(
+            self.priority,
+            {},
+        )
+        for (
+            class_id,
+            subject_id,
+            target_date,
+        ), variables in variables_by_class_subject_day.items():
+            if len(variables) < 2:
+                continue
+            class_daily_limit = context.class_daily_limits.get((class_id, target_date))
+            requirement_limit = 0
+            for requirement_id in requirement_ids_by_class_subject_day[
+                (class_id, subject_id, target_date)
+            ]:
+                required_count = context.required_counts[requirement_id]
+                daily_limit = context.requirement_daily_limits[requirement_id]
+                requirement_limit += min(
+                    required_count,
+                    daily_limit if daily_limit is not None else required_count,
+                )
+            max_daily_lessons = min(len(context.period_orders), requirement_limit)
+            if class_daily_limit is not None:
+                max_daily_lessons = min(max_daily_lessons, class_daily_limit)
+            if max_daily_lessons < 2:
+                continue
+            for threshold in range(2, max_daily_lessons + 1):
+                threshold_reached = context.model.new_bool_var(
+                    f"class_subject_daily_repeat_threshold_{threshold}__"
+                    f"{class_id}__{subject_id}__{target_date.isoformat()}"
+                )
+                context.model.add(sum(variables) >= threshold).only_enforce_if(threshold_reached)
+                context.model.add(sum(variables) <= threshold - 1).only_enforce_if(
+                    threshold_reached.negated()
+                )
+                penalty = threshold_reached
+                if threshold > 2:
+                    penalty = context.model.new_int_var(
+                        0,
+                        threshold - 1,
+                        f"class_subject_daily_repeat_penalty_{threshold}__"
+                        f"{class_id}__{subject_id}__{target_date.isoformat()}",
+                    )
+                    context.model.add(penalty == (threshold - 1) * threshold_reached)
+                context.penalty_terms_by_priority.setdefault(self.priority, []).append(penalty)
+                penalty_groups.setdefault((class_id, subject_id), []).append(penalty)
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassSubjectDoubleThenNextDayPreferenceConstraint:
+    """S15: minimize a subject recurring the day after a double lesson."""
+
+    rule_id = "S15"
+    priority = 25
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_subject_day: dict[
+            tuple[str, str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_subject_day[
+                (
+                    candidate.class_id,
+                    candidate.subject_id,
+                    candidate.target_date,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        presence_by_class_subject_day: dict[
+            tuple[str, str, date],
+            cp_model.IntVar,
+        ] = {}
+        for (
+            class_id,
+            subject_id,
+            target_date,
+        ), variables in variables_by_class_subject_day.items():
+            presence = context.model.new_bool_var(
+                f"class_subject_day_presence__{class_id}__{subject_id}__{target_date.isoformat()}"
+            )
+            context.model.add_max_equality(presence, variables)
+            presence_by_class_subject_day[(class_id, subject_id, target_date)] = presence
+
+        for (
+            class_id,
+            subject_id,
+            target_date,
+        ), variables in variables_by_class_subject_day.items():
+            next_day_presence = presence_by_class_subject_day.get(
+                (class_id, subject_id, target_date + timedelta(days=1))
+            )
+            if len(variables) < 2 or next_day_presence is None:
+                continue
+            repeated_day = context.model.new_bool_var(
+                f"class_subject_double_day__{class_id}__{subject_id}__{target_date.isoformat()}"
+            )
+            context.model.add(sum(variables) >= 2).only_enforce_if(repeated_day)
+            context.model.add(sum(variables) <= 1).only_enforce_if(repeated_day.negated())
+            penalty = context.model.new_bool_var(
+                "class_subject_double_then_next_day__"
+                f"{class_id}__{subject_id}__{target_date.isoformat()}"
+            )
+            context.model.add_bool_and([repeated_day, next_day_presence]).only_enforce_if(penalty)
+            context.model.add_bool_or(
+                [repeated_day.negated(), next_day_presence.negated(), penalty]
+            )
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(penalty)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassSingleLessonDayPreferenceConstraint:
     """S12: minimize class days containing exactly one lesson."""
 
@@ -231,6 +371,8 @@ class ClassSubjectConsecutiveRepeatPreferenceConstraint:
 DEFAULT_SOFT_CONSTRAINTS = (
     RoomChangeGapPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
+    ClassSubjectDailyRepeatPreferenceConstraint(),
+    ClassSubjectDoubleThenNextDayPreferenceConstraint(),
     ClassSingleLessonDayPreferenceConstraint(),
     ClassSubjectConsecutiveRepeatPreferenceConstraint(),
 )
@@ -238,6 +380,8 @@ DEFAULT_SOFT_CONSTRAINTS = (
 SoftConstraint = (
     RoomChangeGapPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
+    | ClassSubjectDailyRepeatPreferenceConstraint
+    | ClassSubjectDoubleThenNextDayPreferenceConstraint
     | ClassSingleLessonDayPreferenceConstraint
     | ClassSubjectConsecutiveRepeatPreferenceConstraint
 )

@@ -283,6 +283,77 @@ def test_result_validator_warns_for_each_adjacent_same_subject_pair(
     assert all(issue.severity == "WARNING" for issue in s13_issues)
 
 
+def test_result_validator_warns_for_double_day_and_same_subject_next_day(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (
+        _lesson(
+            requirement_id="Q1",
+            target_date=date(2026, 7, 27),
+            period_id="P1",
+            teacher_id="T1",
+            subject_id="S1",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            target_date=date(2026, 7, 27),
+            period_id="P2",
+            teacher_id="T2",
+            subject_id="S1",
+        ),
+        _lesson(
+            requirement_id="Q3",
+            target_date=date(2026, 7, 28),
+            period_id="P1",
+            teacher_id="T1",
+            subject_id="S1",
+        ),
+    )
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+    s14_issues = [issue for issue in report.issues if issue.rule_id == "S14"]
+    s15_issues = [issue for issue in report.issues if issue.rule_id == "S15"]
+
+    assert len(s14_issues) == 1
+    assert len(s15_issues) == 1
+    assert all(issue.severity == "WARNING" for issue in (*s14_issues, *s15_issues))
+
+
+def test_result_validator_does_not_treat_the_next_output_date_as_next_calendar_day(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (
+        _lesson(
+            requirement_id="Q1",
+            target_date=date(2026, 7, 27),
+            period_id="P1",
+            teacher_id="T1",
+            subject_id="S1",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            target_date=date(2026, 7, 27),
+            period_id="P2",
+            teacher_id="T2",
+            subject_id="S1",
+        ),
+        _lesson(
+            requirement_id="Q3",
+            target_date=date(2026, 7, 29),
+            period_id="P1",
+            teacher_id="T1",
+            subject_id="S1",
+        ),
+    )
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+
+    assert len([issue for issue in report.issues if issue.rule_id == "S14"]) == 1
+    assert not [issue for issue in report.issues if issue.rule_id == "S15"]
+
+
 def test_result_validator_rejects_two_consecutive_empty_periods_between_lessons(
     minimal_input_data: InputDataModel,
 ) -> None:
