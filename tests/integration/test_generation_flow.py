@@ -76,12 +76,21 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
     assert len(document.dates) == 3
 
 
-def test_lower_priority_s12_rebalances_single_lesson_days_after_s11(
+def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
     minimal_input_data: InputDataModel,
     tmp_path: Path,
 ) -> None:
     input_data = replace(
         minimal_input_data,
+        calendar_days=(
+            minimal_input_data.calendar_days[0],
+            minimal_input_data.calendar_days[1],
+            replace(
+                minimal_input_data.calendar_days[2],
+                enabled_period_ids=tuple(period.period_id for period in minimal_input_data.periods),
+                note=None,
+            ),
+        ),
         campuses=(minimal_input_data.campuses[0],),
         rooms=minimal_input_data.rooms[:2],
         teachers=(minimal_input_data.teachers[0],),
@@ -122,8 +131,10 @@ def test_lower_priority_s12_rebalances_single_lesson_days_after_s11(
     )
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
-    assert sorted(lesson_counts.values()) == [2, 2]
-    assert solver_result.statistics.constraint_rule_ids[-4:] == (
+    assert sorted(lesson_counts.values()) == [1, 1, 2]
+    assert solver_result.statistics.constraint_rule_ids[-6:] == (
+        "S14",
+        "S15",
         "S11",
         "S12",
         "S13",

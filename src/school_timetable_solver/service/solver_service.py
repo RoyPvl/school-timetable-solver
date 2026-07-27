@@ -162,6 +162,14 @@ class TimetableSolverService:
                 if not is_last_priority:
                     achieved_penalty = sum(solver.value(penalty) for penalty in priority_terms)
                     model.add(sum(priority_terms) <= achieved_penalty)
+                    for group_terms in context.penalty_term_groups_by_priority.get(
+                        priority,
+                        {},
+                    ).values():
+                        achieved_group_penalty = sum(
+                            solver.value(penalty) for penalty in group_terms
+                        )
+                        model.add(sum(group_terms) <= achieved_group_penalty)
                     if priority == last_assignment_priority:
                         for variable in variables.values():
                             model.add(variable == solver.value(variable))
