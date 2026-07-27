@@ -310,9 +310,10 @@ class CandidateBuilderService:
         campuses = {item.campus_id: item for item in input_data.campuses}
         teachers = {item.teacher_id: item for item in input_data.teachers}
         subjects = {item.subject_id: item for item in input_data.subjects}
-        availability = {
-            (item.teacher_id, item.target_date, item.period_id): item.available
-            for item in input_data.teacher_availability
+        teacher_leave_slots = {
+            (item.teacher_id, item.target_date, period_id)
+            for item in input_data.teacher_leaves
+            for period_id in item.unavailable_period_ids
         }
         class_rules = {
             (item.class_id, item.target_date): item for item in resolved_rules.class_date_rules
@@ -340,10 +341,11 @@ class CandidateBuilderService:
                     if period.period_id not in allowed_periods:
                         rejection_counts[(requirement.requirement_id, "H13")] += 1
                         continue
-                    if not availability.get(
-                        (teacher.teacher_id, calendar_day.target_date, period.period_id),
-                        False,
-                    ):
+                    if (
+                        teacher.teacher_id,
+                        calendar_day.target_date,
+                        period.period_id,
+                    ) in teacher_leave_slots:
                         rejection_counts[(requirement.requirement_id, "H05")] += 1
                         continue
                     candidate_id = "__".join(

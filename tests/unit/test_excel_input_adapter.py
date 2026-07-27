@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -9,15 +10,40 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_1_and_normalizes_horizontal_availability() -> None:
+def test_reader_accepts_contract_v0_3_with_empty_teacher_leave_sheet() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.1"
+    assert result.input_data.settings.schema_version == "0.3"
     assert len(result.input_data.periods) == 6
-    assert len(result.input_data.teacher_availability) % 6 == 0
-    assert all(isinstance(item.available, bool) for item in result.input_data.teacher_availability)
+    assert result.input_data.teachers[0].home_campus_id == "C1"
+    assert not result.input_data.teacher_leaves
+
+
+def test_reader_normalizes_full_day_and_partial_teacher_leaves(
+    tmp_path: Path,
+) -> None:
+    workbook = load_workbook(SAMPLE)
+    sheet = workbook["10_教師休み"]
+    sheet.append(("T1", date(2026, 7, 27), "ALL", "終日休み"))
+    sheet.append(("T2", date(2026, 7, 28), "P4|P6", "時限休み"))
+    target = tmp_path / "teacher-leaves.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    teacher_leaves = result.input_data.teacher_leaves
+    assert teacher_leaves[0].unavailable_period_ids == (
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+    )
+    assert teacher_leaves[1].unavailable_period_ids == ("P4", "P6")
 
 
 def test_operation_sheet_needs_no_header_and_preference_rows_are_ignored(
@@ -48,6 +74,20 @@ def test_reader_rejects_non_boolean_values(tmp_path: Path) -> None:
 
     assert result.input_data is None
     assert any(issue.rule_id == "INVALID_BOOLEAN" for issue in result.issues)
+
+
+def test_reader_rejects_all_mixed_with_individual_teacher_leave_periods(
+    tmp_path: Path,
+) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["10_教師休み"].append(("T1", date(2026, 7, 27), "ALL|P1", None))
+    target = tmp_path / "invalid-teacher-leave-periods.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is None
+    assert any(issue.rule_id == "INVALID_TEACHER_LEAVE_PERIODS" for issue in result.issues)
 
 
 def test_reader_rejects_string_date_and_unsupported_schema(tmp_path: Path) -> None:

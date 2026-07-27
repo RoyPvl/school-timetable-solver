@@ -25,6 +25,7 @@ class RoomModel:
 class TeacherModel:
     teacher_id: str
     teacher_name: str
+    home_campus_id: str
     enabled: bool
 
 

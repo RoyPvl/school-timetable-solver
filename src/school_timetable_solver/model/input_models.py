@@ -46,11 +46,10 @@ class LessonRequirementModel:
 
 
 @dataclass(frozen=True, slots=True)
-class TeacherAvailabilityModel:
+class TeacherLeaveModel:
     teacher_id: str
     target_date: date
-    period_id: str
-    available: bool
+    unavailable_period_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,5 +84,5 @@ class InputDataModel:
     classes: tuple[ClassModel, ...]
     subjects: tuple[SubjectModel, ...]
     lesson_requirements: tuple[LessonRequirementModel, ...]
-    teacher_availability: tuple[TeacherAvailabilityModel, ...]
+    teacher_leaves: tuple[TeacherLeaveModel, ...]
     placement_rules: tuple[PlacementRuleModel, ...]

@@ -23,6 +23,8 @@ from school_timetable_solver.model.solver_models import (
 class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
+    _LOWER_PRIORITY_RESERVE_RATIO = 0.15
+
     def __init__(
         self,
         hard_constraints: tuple[HardConstraint, ...],
@@ -93,7 +95,14 @@ class TimetableSolverService:
             soft_constraints_by_priority[constraint.priority].append(constraint)
 
         priorities = sorted(soft_constraints_by_priority, reverse=True)
+        assignment_priorities = {
+            constraint.priority
+            for constraint in self._soft_constraints
+            if constraint.optimization_scope == "assignment"
+        }
+        last_assignment_priority = min(assignment_priorities) if assignment_priorities else None
         total_wall_time = 0.0
+        solved_variable_count = 0
         solver: cp_model.CpSolver | None = None
         status = "UNKNOWN"
         if not priorities:
@@ -112,11 +121,29 @@ class TimetableSolverService:
                     for penalty in priority_terms:
                         model.add_hint(penalty, 0)
                 else:
-                    for variable in variables.values():
+                    for variable_index in range(solved_variable_count):
+                        variable = model.get_int_var_from_proto_index(variable_index)
                         model.add_hint(variable, solver.value(variable))
 
                 is_last_priority = priority_index == len(priorities) - 1
-                phase_seconds = remaining_seconds if is_last_priority else remaining_seconds * 0.9
+                remaining_priority_count = len(priorities) - priority_index - 1
+                if is_last_priority:
+                    phase_seconds = remaining_seconds
+                else:
+                    requested_reserve = (
+                        request.max_solve_seconds
+                        * self._LOWER_PRIORITY_RESERVE_RATIO
+                        * remaining_priority_count
+                    )
+                    equitable_reserve = (
+                        remaining_seconds
+                        * remaining_priority_count
+                        / (remaining_priority_count + 1)
+                    )
+                    phase_seconds = max(
+                        remaining_seconds - min(requested_reserve, equitable_reserve),
+                        0.001,
+                    )
                 phase_solver = self._new_solver(request, phase_seconds)
                 phase_status = phase_solver.status_name(phase_solver.solve(model))
                 total_wall_time += phase_solver.wall_time
@@ -130,12 +157,14 @@ class TimetableSolverService:
                     break
 
                 solver = phase_solver
+                solved_variable_count = len(model.proto.variables)
                 status = phase_status
                 if not is_last_priority:
                     achieved_penalty = sum(solver.value(penalty) for penalty in priority_terms)
                     model.add(sum(priority_terms) <= achieved_penalty)
-                    for variable in variables.values():
-                        model.add(variable == solver.value(variable))
+                    if priority == last_assignment_priority:
+                        for variable in variables.values():
+                            model.add(variable == solver.value(variable))
             if len(priorities) > 1 and status == "OPTIMAL":
                 status = "FEASIBLE"
 

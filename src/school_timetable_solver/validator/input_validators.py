@@ -57,17 +57,33 @@ class ReferenceIntegrityValidator:
                         "開講カレンダーの日付が重複しています",
                     )
                 )
-        slots = Counter(
-            (item.teacher_id, item.target_date, item.period_id)
-            for item in input_data.teacher_availability
+        leave_days = Counter(
+            (item.teacher_id, item.target_date) for item in input_data.teacher_leaves
         )
-        for key, count in slots.items():
+        for key, count in leave_days.items():
             if count > 1:
                 issues.append(
                     self._issue(
-                        "DUPLICATE_TEACHER_AVAILABILITY",
+                        "DUPLICATE_TEACHER_LEAVE",
                         str(key),
-                        "教師勤務のteacher_id/dateが重複しています",
+                        "教師休みのteacher_id/dateが重複しています",
+                    )
+                )
+        for teacher_leave in input_data.teacher_leaves:
+            duplicate_period_ids = {
+                period_id
+                for period_id, count in Counter(teacher_leave.unavailable_period_ids).items()
+                if count > 1
+            }
+            if duplicate_period_ids:
+                issues.append(
+                    self._issue(
+                        "DUPLICATE_TEACHER_LEAVE_PERIOD",
+                        f"{teacher_leave.teacher_id}/{teacher_leave.target_date}",
+                        (
+                            "教師休みのunavailable_periodsに重複があります: "
+                            f"{sorted(duplicate_period_ids)}"
+                        ),
                     )
                 )
         enabled_pairs = Counter(
@@ -182,6 +198,26 @@ class ReferenceIntegrityValidator:
         periods = {item.period_id: item for item in input_data.periods}
         calendar_dates = {item.target_date for item in input_data.calendar_days}
 
+        for teacher in input_data.teachers:
+            self._require_reference(
+                issues,
+                teacher.teacher_id,
+                "home_campus_id",
+                teacher.home_campus_id,
+                campuses,
+            )
+            if (
+                teacher.enabled
+                and teacher.home_campus_id in campuses
+                and not campuses[teacher.home_campus_id].enabled
+            ):
+                issues.append(
+                    self._issue(
+                        "DISABLED_MASTER_REFERENCE",
+                        teacher.teacher_id,
+                        "有効教師が無効な所属校舎を参照しています",
+                    )
+                )
         for room in input_data.rooms:
             self._require_reference(issues, room.room_id, "campus_id", room.campus_id, campuses)
             if room.enabled and room.campus_id in campuses and not campuses[room.campus_id].enabled:
@@ -243,25 +279,38 @@ class ReferenceIntegrityValidator:
                             "有効授業要求が無効マスタを参照しています",
                         )
                     )
-        for availability in input_data.teacher_availability:
-            target = f"{availability.teacher_id}/{availability.target_date}"
-            self._require_reference(issues, target, "teacher_id", availability.teacher_id, teachers)
-            self._require_reference(issues, target, "period_id", availability.period_id, periods)
-            if availability.target_date not in calendar_dates:
+        for teacher_leave in input_data.teacher_leaves:
+            target = f"{teacher_leave.teacher_id}/{teacher_leave.target_date}"
+            self._require_reference(
+                issues,
+                target,
+                "teacher_id",
+                teacher_leave.teacher_id,
+                teachers,
+            )
+            for period_id in teacher_leave.unavailable_period_ids:
+                self._require_reference(
+                    issues,
+                    target,
+                    "period_id",
+                    period_id,
+                    periods,
+                )
+            if teacher_leave.target_date not in calendar_dates:
                 issues.append(
                     self._issue(
                         "UNKNOWN_REFERENCE",
                         target,
-                        "教師勤務の日付が開講カレンダーに存在しません",
+                        "教師休みの日付が開講カレンダーに存在しません",
                     )
                 )
-            teacher = teachers.get(availability.teacher_id)
+            teacher = teachers.get(teacher_leave.teacher_id)
             if teacher is not None and not teacher.enabled:
                 issues.append(
                     self._issue(
                         "DISABLED_MASTER_REFERENCE",
                         target,
-                        "教師勤務が無効教師を参照しています",
+                        "教師休みが無効教師を参照しています",
                     )
                 )
 

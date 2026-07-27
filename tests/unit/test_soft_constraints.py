@@ -9,6 +9,8 @@ from school_timetable_solver.constraint.hard_constraints import (
 )
 from school_timetable_solver.constraint.soft_constraints import (
     ClassDailyContiguityPreferenceConstraint,
+    ClassSingleLessonDayPreferenceConstraint,
+    ClassSubjectConsecutiveRepeatPreferenceConstraint,
     RoomChangeGapPreferenceConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
@@ -72,9 +74,16 @@ def test_s10_allows_adjacent_class_change_when_only_one_room_exists() -> None:
     assert solver.objective_value == 1
 
 
-def _solve_contiguity(
+def _solve_class_day_preference(
+    constraint: (
+        ClassDailyContiguityPreferenceConstraint
+        | ClassSingleLessonDayPreferenceConstraint
+        | ClassSubjectConsecutiveRepeatPreferenceConstraint
+    ),
     selected_period_ids: set[str],
+    subject_ids_by_period: dict[str, str] | None = None,
 ) -> tuple[cp_model.CpSolver, SolverContext]:
+    subject_ids = subject_ids_by_period or {}
     candidates = tuple(
         CandidateSlotModel(
             f"Q{period_index}__P{period_index}",
@@ -84,7 +93,7 @@ def _solve_contiguity(
             f"T{period_index}",
             "C1",
             "CL1",
-            "S1",
+            subject_ids.get(f"P{period_index}", "S1"),
         )
         for period_index in range(1, 7)
     )
@@ -110,7 +119,6 @@ def _solve_contiguity(
         calendar_dates=(TARGET_DATE,),
     )
     ClassRoomContinuityConstraint().apply(context)
-    constraint = ClassDailyContiguityPreferenceConstraint()
     constraint.apply(context)
     for candidate in candidates:
         context.model.add(
@@ -124,19 +132,71 @@ def _solve_contiguity(
 
 
 def test_s11_has_no_penalty_for_one_contiguous_class_block() -> None:
-    solver, _ = _solve_contiguity({"P2", "P3", "P4"})
+    solver, _ = _solve_class_day_preference(
+        ClassDailyContiguityPreferenceConstraint(),
+        {"P2", "P3", "P4"},
+    )
 
     assert solver.objective_value == 0
 
 
 def test_s11_counts_one_split_class_day_even_with_multiple_empty_periods() -> None:
-    solver, _ = _solve_contiguity({"P1", "P4"})
+    solver, _ = _solve_class_day_preference(
+        ClassDailyContiguityPreferenceConstraint(),
+        {"P1", "P4"},
+    )
 
     assert solver.objective_value == 1
 
 
-def test_s11_has_higher_priority_than_s10() -> None:
+def test_s12_penalizes_only_class_days_with_exactly_one_lesson() -> None:
+    objectives = []
+    for selected_period_ids in (set(), {"P2"}, {"P2", "P3"}):
+        solver, _ = _solve_class_day_preference(
+            ClassSingleLessonDayPreferenceConstraint(),
+            selected_period_ids,
+        )
+        objectives.append(solver.objective_value)
+
+    assert objectives == [0, 1, 0]
+
+
+def test_s13_counts_each_adjacent_same_subject_pair() -> None:
+    objectives = []
+    for selected_period_ids in (
+        set(),
+        {"P2"},
+        {"P2", "P3"},
+        {"P2", "P3", "P4"},
+        {"P2", "P4"},
+    ):
+        solver, _ = _solve_class_day_preference(
+            ClassSubjectConsecutiveRepeatPreferenceConstraint(),
+            selected_period_ids,
+        )
+        objectives.append(solver.objective_value)
+
+    assert objectives == [0, 0, 1, 2, 0]
+
+
+def test_s13_does_not_penalize_adjacent_different_subjects() -> None:
+    solver, _ = _solve_class_day_preference(
+        ClassSubjectConsecutiveRepeatPreferenceConstraint(),
+        {"P2", "P3"},
+        {"P2": "S1", "P3": "S2"},
+    )
+
+    assert solver.objective_value == 0
+
+
+def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> None:
     assert (
         ClassDailyContiguityPreferenceConstraint.priority
+        > ClassSingleLessonDayPreferenceConstraint.priority
+        > ClassSubjectConsecutiveRepeatPreferenceConstraint.priority
         > RoomChangeGapPreferenceConstraint.priority
     )
+    assert ClassDailyContiguityPreferenceConstraint.optimization_scope == "assignment"
+    assert ClassSingleLessonDayPreferenceConstraint.optimization_scope == "assignment"
+    assert ClassSubjectConsecutiveRepeatPreferenceConstraint.optimization_scope == "assignment"
+    assert RoomChangeGapPreferenceConstraint.optimization_scope == "room"

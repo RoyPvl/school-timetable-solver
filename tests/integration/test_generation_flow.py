@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
 from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
-from school_timetable_solver.model.input_models import GenerationMode
+from school_timetable_solver.model.input_models import GenerationMode, InputDataModel
 from school_timetable_solver.model.result_models import GenerationRequestModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
@@ -70,5 +72,115 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert len(lessons) == 4
-    assert not report.issues
+    assert {issue.rule_id for issue in report.issues} == {"S12"}
     assert len(document.dates) == 3
+
+
+def test_lower_priority_s12_rebalances_single_lesson_days_after_s11(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        campuses=(minimal_input_data.campuses[0],),
+        rooms=minimal_input_data.rooms[:2],
+        teachers=(minimal_input_data.teachers[0],),
+        classes=(minimal_input_data.classes[0],),
+        subjects=(minimal_input_data.subjects[0],),
+        lesson_requirements=(
+            replace(
+                minimal_input_data.lesson_requirements[0],
+                required_periods=4,
+                max_periods_per_day=3,
+            ),
+        ),
+        teacher_leaves=(),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    request = GenerationRequestModel(
+        tmp_path / "input.xlsx",
+        tmp_path / "output.xlsx",
+        None,
+        GenerationMode.STRICT,
+        10.0,
+        1,
+        1,
+    )
+
+    solver_result = TimetableSolverService(
+        DEFAULT_HARD_CONSTRAINTS,
+        DEFAULT_SOFT_CONSTRAINTS,
+    ).execute(
+        request,
+        input_data,
+        resolved,
+        candidates,
+    )
+    lesson_counts = Counter(
+        (lesson.class_id, lesson.target_date) for lesson in solver_result.lessons
+    )
+
+    assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
+    assert sorted(lesson_counts.values()) == [2, 2]
+    assert solver_result.statistics.constraint_rule_ids[-4:] == (
+        "S11",
+        "S12",
+        "S13",
+        "S10",
+    )
+
+
+def test_lower_priority_s13_mixes_subjects_without_worsening_s11_or_s12(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        campuses=(minimal_input_data.campuses[0],),
+        rooms=minimal_input_data.rooms[:2],
+        classes=(minimal_input_data.classes[0],),
+        lesson_requirements=(
+            replace(
+                minimal_input_data.lesson_requirements[0],
+                required_periods=2,
+                max_periods_per_day=2,
+            ),
+            replace(
+                minimal_input_data.lesson_requirements[1],
+                class_id="CL1",
+                required_periods=2,
+                max_periods_per_day=2,
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    request = GenerationRequestModel(
+        tmp_path / "input.xlsx",
+        tmp_path / "output.xlsx",
+        None,
+        GenerationMode.STRICT,
+        10.0,
+        1,
+        1,
+    )
+
+    solver_result = TimetableSolverService(
+        DEFAULT_HARD_CONSTRAINTS,
+        DEFAULT_SOFT_CONSTRAINTS,
+    ).execute(
+        request,
+        input_data,
+        resolved,
+        candidates,
+    )
+    lessons_by_date = {}
+    for lesson in solver_result.lessons:
+        lessons_by_date.setdefault(lesson.target_date, []).append(lesson)
+
+    assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
+    assert sorted(len(lessons) for lessons in lessons_by_date.values()) == [2, 2]
+    assert all(
+        len({lesson.subject_id for lesson in lessons}) == 2 for lessons in lessons_by_date.values()
+    )

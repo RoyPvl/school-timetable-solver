@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import date
 from itertools import combinations, pairwise
 
+from ortools.sat.python import cp_model
+
 from school_timetable_solver.constraint.solver_context import SolverContext
 
 
@@ -12,6 +14,7 @@ class RoomChangeGapPreferenceConstraint:
 
     rule_id = "S10"
     priority = 10
+    optimization_scope = "room"
 
     def apply(self, context: SolverContext) -> None:
         ordered_period_ids = tuple(
@@ -85,6 +88,7 @@ class ClassDailyContiguityPreferenceConstraint:
 
     rule_id = "S11"
     priority = 20
+    optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
         ordered_period_ids = tuple(
@@ -122,9 +126,118 @@ class ClassDailyContiguityPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassSingleLessonDayPreferenceConstraint:
+    """S12: minimize class days containing exactly one lesson."""
+
+    rule_id = "S12"
+    priority = 15
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        ordered_period_ids = tuple(
+            period_id
+            for period_id, _ in sorted(
+                context.period_orders.items(),
+                key=lambda item: item[1],
+            )
+        )
+        for campus_id, target_date, class_id in context.class_room_variables:
+            slots = []
+            for period_id in ordered_period_ids:
+                slot = context.class_slot_variables.get(
+                    (campus_id, target_date, class_id, period_id)
+                )
+                if slot is not None:
+                    slots.append(slot)
+            single_lesson_day = context.model.new_bool_var(
+                f"class_single_lesson_day__{class_id}__{target_date.isoformat()}"
+            )
+            context.model.add(sum(slots) == 1).only_enforce_if(single_lesson_day)
+            context.model.add(sum(slots) != 1).only_enforce_if(single_lesson_day.negated())
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(
+                single_lesson_day
+            )
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassSubjectConsecutiveRepeatPreferenceConstraint:
+    """S13: minimize adjacent lessons of one subject for one class."""
+
+    rule_id = "S13"
+    priority = 12
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_subject_slot: dict[
+            tuple[str, str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_subject_slot[
+                (
+                    candidate.class_id,
+                    candidate.subject_id,
+                    candidate.target_date,
+                    candidate.period_id,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        presence_by_class_subject_slot: dict[
+            tuple[str, str, date, str],
+            cp_model.IntVar,
+        ] = {}
+        for key, variables in variables_by_class_subject_slot.items():
+            if len(variables) == 1:
+                presence_by_class_subject_slot[key] = variables[0]
+                continue
+            presence = context.model.new_bool_var(
+                f"class_subject_slot__{key[0]}__{key[1]}__{key[2].isoformat()}__{key[3]}"
+            )
+            context.model.add_max_equality(presence, variables)
+            presence_by_class_subject_slot[key] = presence
+
+        ordered_period_ids = tuple(
+            period_id
+            for period_id, _ in sorted(
+                context.period_orders.items(),
+                key=lambda item: item[1],
+            )
+        )
+        class_subject_days = {
+            (class_id, subject_id, target_date)
+            for class_id, subject_id, target_date, _ in presence_by_class_subject_slot
+        }
+        for class_id, subject_id, target_date in class_subject_days:
+            for left_period_id, right_period_id in pairwise(ordered_period_ids):
+                left_slot = presence_by_class_subject_slot.get(
+                    (class_id, subject_id, target_date, left_period_id)
+                )
+                right_slot = presence_by_class_subject_slot.get(
+                    (class_id, subject_id, target_date, right_period_id)
+                )
+                if left_slot is None or right_slot is None:
+                    continue
+                penalty = context.model.new_bool_var(
+                    "class_subject_consecutive_repeat__"
+                    f"{class_id}__{subject_id}__{target_date.isoformat()}__"
+                    f"{left_period_id}"
+                )
+                context.model.add_bool_and([left_slot, right_slot]).only_enforce_if(penalty)
+                context.model.add_bool_or([left_slot.negated(), right_slot.negated(), penalty])
+                context.penalty_terms_by_priority.setdefault(self.priority, []).append(penalty)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 DEFAULT_SOFT_CONSTRAINTS = (
     RoomChangeGapPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
+    ClassSingleLessonDayPreferenceConstraint(),
+    ClassSubjectConsecutiveRepeatPreferenceConstraint(),
 )
 
-SoftConstraint = RoomChangeGapPreferenceConstraint | ClassDailyContiguityPreferenceConstraint
+SoftConstraint = (
+    RoomChangeGapPreferenceConstraint
+    | ClassDailyContiguityPreferenceConstraint
+    | ClassSingleLessonDayPreferenceConstraint
+    | ClassSubjectConsecutiveRepeatPreferenceConstraint
+)

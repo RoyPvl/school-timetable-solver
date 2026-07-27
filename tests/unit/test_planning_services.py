@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
+from school_timetable_solver.model.input_models import (
+    InputDataModel,
+    PlacementRuleModel,
+    TeacherLeaveModel,
+)
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
@@ -95,25 +99,36 @@ def test_candidate_builder_uses_output_periods_assigned_teacher_and_same_campus_
     )
 
 
-def test_candidate_builder_treats_missing_teacher_row_as_unavailable(
+def test_candidate_builder_treats_missing_teacher_leave_row_as_available(
     minimal_input_data: InputDataModel,
 ) -> None:
-    input_data = replace(
-        minimal_input_data,
-        teacher_availability=tuple(
-            item
-            for item in minimal_input_data.teacher_availability
-            if not (item.teacher_id == "T1" and item.target_date == date(2026, 7, 27))
-        ),
-    )
-    resolved = RuleResolverService().execute(input_data)
-    result = CandidateBuilderService().execute(input_data, resolved)
+    resolved = RuleResolverService().execute(minimal_input_data)
+    result = CandidateBuilderService().execute(minimal_input_data, resolved)
 
-    assert not [
+    assert [
         item
         for item in result.candidates
         if item.teacher_id == "T1" and item.target_date == date(2026, 7, 27)
     ]
+    assert not [summary for summary in result.rejection_summaries if summary.rule_id == "H05"]
+
+
+def test_candidate_builder_excludes_only_teacher_leave_periods(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        teacher_leaves=(TeacherLeaveModel("T1", date(2026, 7, 27), ("P1", "P2")),),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    result = CandidateBuilderService().execute(input_data, resolved)
+    t1_candidates = [
+        item
+        for item in result.candidates
+        if item.teacher_id == "T1" and item.target_date == date(2026, 7, 27)
+    ]
+
+    assert {item.period_id for item in t1_candidates} == {"P3"}
     assert any(summary.rule_id == "H05" for summary in result.rejection_summaries)
 
 

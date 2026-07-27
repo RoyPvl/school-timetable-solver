@@ -10,7 +10,6 @@ from school_timetable_solver.model.input_models import (
     InputWorkbookSettingsModel,
     LessonRequirementModel,
     PlacementRuleModel,
-    TeacherAvailabilityModel,
 )
 from school_timetable_solver.model.master_models import (
     CampusModel,
@@ -36,7 +35,7 @@ def minimal_input_data() -> InputDataModel:
         for order in range(1, 7)
     )
     return InputDataModel(
-        settings=InputWorkbookSettingsModel("0.1", "テスト時間割", None),
+        settings=InputWorkbookSettingsModel("0.2", "テスト時間割", None),
         calendar_days=(
             CalendarDayModel(
                 output_dates[0], True, tuple(item.period_id for item in periods), None
@@ -60,8 +59,8 @@ def minimal_input_data() -> InputDataModel:
             RoomModel("R3", "201", "C2", 1, True),
         ),
         teachers=(
-            TeacherModel("T1", "教師一", True),
-            TeacherModel("T2", "教師二", True),
+            TeacherModel("T1", "教師一", "C1", True),
+            TeacherModel("T2", "教師二", "C2", True),
         ),
         classes=(
             ClassModel("CL1", "小学A", "C1", "elementary", 6, "non_exam", None, True),
@@ -75,12 +74,7 @@ def minimal_input_data() -> InputDataModel:
             LessonRequirementModel("Q1", "CL1", "S1", "T1", 2, 1, True),
             LessonRequirementModel("Q2", "CL2", "S2", "T2", 2, 1, True),
         ),
-        teacher_availability=tuple(
-            TeacherAvailabilityModel(teacher_id, target_date, period.period_id, True)
-            for teacher_id in ("T1", "T2")
-            for target_date in output_dates
-            for period in periods
-        ),
+        teacher_leaves=(),
         placement_rules=(
             PlacementRuleModel(
                 "R_CLASS_BASE",

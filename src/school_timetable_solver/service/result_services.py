@@ -11,6 +11,7 @@ from school_timetable_solver.model.result_models import (
     DailyTimetableModel,
     OutputLessonModel,
     OutputPeriodModel,
+    OutputTeacherLeaveModel,
     RoomColumnModel,
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
@@ -95,6 +96,12 @@ class ValidateResultService:
         self._validate_class_long_internal_gaps(input_data, lessons, issues)
         self._report_room_change_gap_preference(input_data, lessons, issues)
         self._report_class_daily_contiguity_preference(input_data, lessons, issues)
+        self._report_class_single_lesson_day_preference(lessons, issues)
+        self._report_class_subject_consecutive_repeat_preference(
+            input_data,
+            lessons,
+            issues,
+        )
         return ValidationReportModel(tuple(issues))
 
     def _validate_required_counts(
@@ -175,9 +182,10 @@ class ValidateResultService:
     ) -> None:
         calendars = {day.target_date: day for day in input_data.calendar_days if day.output_enabled}
         periods = {period.period_id: period for period in input_data.periods}
-        availability = {
-            (item.teacher_id, item.target_date, item.period_id): item.available
-            for item in input_data.teacher_availability
+        teacher_leave_slots = {
+            (item.teacher_id, item.target_date, period_id)
+            for item in input_data.teacher_leaves
+            for period_id in item.unavailable_period_ids
         }
         class_rules = {
             (item.class_id, item.target_date): item for item in resolved_rules.class_date_rules
@@ -196,10 +204,12 @@ class ValidateResultService:
                 issues.append(self._issue("H04", target, "日付上利用不可時限への配置です"))
             if lesson.period_id not in periods:
                 issues.append(self._issue("H04", target, "未知の時限への配置です"))
-            if not availability.get(
-                (lesson.teacher_id, lesson.target_date, lesson.period_id), False
-            ):
-                issues.append(self._issue("H05", target, "教師勤務不可日時への配置です"))
+            if (
+                lesson.teacher_id,
+                lesson.target_date,
+                lesson.period_id,
+            ) in teacher_leave_slots:
+                issues.append(self._issue("H05", target, "教師休み日時への配置です"))
             rule = class_rules.get((lesson.class_id, lesson.target_date))
             if rule is None or lesson.period_id not in (rule.allowed_period_ids or ()):
                 issues.append(self._issue("H13", target, "クラス許可時限外への配置です"))
@@ -480,6 +490,57 @@ class ValidateResultService:
                     )
                 )
 
+    def _report_class_single_lesson_day_preference(
+        self,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        lesson_counts = Counter((lesson.class_id, lesson.target_date) for lesson in lessons)
+        for key, lesson_count in lesson_counts.items():
+            if lesson_count == 1:
+                issues.append(
+                    ValidationIssueModel(
+                        "S12",
+                        "WARNING",
+                        str(key),
+                        "同一クラスの授業がこの日に1コマだけ配置されています",
+                    )
+                )
+
+    def _report_class_subject_consecutive_repeat_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        periods_by_class_subject_day: dict[
+            tuple[str, str, date],
+            set[int],
+        ] = defaultdict(set)
+        for lesson in lessons:
+            period_order = period_orders.get(lesson.period_id)
+            if period_order is not None:
+                periods_by_class_subject_day[
+                    (lesson.class_id, lesson.subject_id, lesson.target_date)
+                ].add(period_order)
+
+        for key, period_order_set in periods_by_class_subject_day.items():
+            for left_period_order, right_period_order in pairwise(sorted(period_order_set)):
+                if right_period_order != left_period_order + 1:
+                    continue
+                issues.append(
+                    ValidationIssueModel(
+                        "S13",
+                        "WARNING",
+                        f"{key}/{left_period_order}/{right_period_order}",
+                        (
+                            "同一クラスが連続時限で同じ教科を受講しています: "
+                            f"時限={left_period_order},{right_period_order}"
+                        ),
+                    )
+                )
+
     def _lesson_target(self, lesson: ScheduledLessonModel) -> str:
         return f"{lesson.requirement_id}/{lesson.target_date}/{lesson.period_id}/{lesson.room_id}"
 
@@ -552,6 +613,9 @@ class BuildTimetableDocumentService:
         by_date: dict[date, dict[tuple[str, str], OutputLessonModel]] = {
             target_date: {} for target_date in output_dates
         }
+        teacher_leaves_by_date: dict[date, list[OutputTeacherLeaveModel]] = {
+            target_date: [] for target_date in output_dates
+        }
         for lesson in lessons:
             if lesson.target_date not in output_dates:
                 raise ValueError(f"出力対象外日の授業です: {lesson.target_date}")
@@ -576,10 +640,64 @@ class BuildTimetableDocumentService:
                 subjects[lesson.subject_id].subject_name,
                 teachers[lesson.teacher_id].teacher_name,
             )
+        period_orders = {period.period_id: period.output_order for period in period_models}
+        campus_room_counts = {campus.campus_id: len(campus.rooms) for campus in campus_models}
+        for teacher_leave in input_data.teacher_leaves:
+            if teacher_leave.target_date not in output_dates:
+                continue
+            teacher = teachers.get(teacher_leave.teacher_id)
+            if teacher is None:
+                raise ValueError(
+                    f"教師休みが未知または無効な教師を参照しています: {teacher_leave.teacher_id}"
+                )
+            if teacher.home_campus_id not in campus_room_counts:
+                raise ValueError(
+                    "教師休みの所属校舎が出力対象外です: "
+                    f"{teacher.teacher_id}/{teacher.home_campus_id}"
+                )
+            unknown_period_ids = set(teacher_leave.unavailable_period_ids) - valid_period_ids
+            if unknown_period_ids:
+                raise ValueError(
+                    "教師休みが未知の時限を参照しています: "
+                    f"{teacher.teacher_id}/{sorted(unknown_period_ids)}"
+                )
+            teacher_leaves_by_date[teacher_leave.target_date].append(
+                OutputTeacherLeaveModel(
+                    teacher_display_name=teacher.teacher_name,
+                    campus_id=teacher.home_campus_id,
+                    unavailable_period_ids=tuple(
+                        sorted(
+                            teacher_leave.unavailable_period_ids,
+                            key=period_orders.__getitem__,
+                        )
+                    ),
+                )
+            )
+        all_period_ids = set(valid_period_ids)
+        for target_date, teacher_leaves in teacher_leaves_by_date.items():
+            required_cells_by_campus = Counter(
+                {
+                    campus_id: sum(
+                        1 if set(teacher_leave.unavailable_period_ids) == all_period_ids else 2
+                        for teacher_leave in teacher_leaves
+                        if teacher_leave.campus_id == campus_id
+                    )
+                    for campus_id in campus_room_counts
+                }
+            )
+            for campus_id, required_cells in required_cells_by_campus.items():
+                available_cells = campus_room_counts[campus_id]
+                if required_cells > available_cells:
+                    raise ValueError(
+                        "OUTPUT_TEACHER_LEAVE_OVERFLOW: "
+                        f"{target_date}/{campus_id}/"
+                        f"required={required_cells}/available={available_cells}"
+                    )
         daily_models = tuple(
             DailyTimetableModel(
                 day.target_date,
                 MappingProxyType(dict(by_date[day.target_date])),
+                tuple(teacher_leaves_by_date[day.target_date]),
             )
             for day in output_days
         )

@@ -6,6 +6,7 @@ from datetime import time
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import Cell
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -137,6 +138,86 @@ class ExcelTimetableWriterAdapter:
             start_row,
             start_column,
         )
+        self._write_teacher_leaves(
+            worksheet,
+            document,
+            date_index,
+            start_row,
+            start_column,
+        )
+
+    def _write_teacher_leaves(
+        self,
+        worksheet: Worksheet,
+        document: TimetableDocumentModel,
+        date_index: int,
+        start_row: int,
+        start_column: int,
+    ) -> None:
+        leave_row = start_row + 20
+        daily = document.dates[date_index]
+        all_period_ids = {period.period_id for period in document.periods}
+        room_offset = 0
+        for campus in document.campuses:
+            cursor = start_column + 2 + room_offset
+            campus_end = cursor + len(campus.rooms) - 1
+            for teacher_leave in (
+                item for item in daily.teacher_leaves if item.campus_id == campus.campus_id
+            ):
+                is_full_day = set(teacher_leave.unavailable_period_ids) == all_period_ids
+                required_cells = 1 if is_full_day else 2
+                if cursor + required_cells - 1 > campus_end:
+                    raise ValueError(
+                        f"OUTPUT_TEACHER_LEAVE_OVERFLOW: {daily.target_date}/{campus.campus_id}"
+                    )
+                name_cell = worksheet.cell(
+                    leave_row,
+                    cursor,
+                    teacher_leave.teacher_display_name,
+                )
+                self._style_teacher_leave_cell(name_cell)
+                if not is_full_day:
+                    period_cell = worksheet.cell(
+                        leave_row,
+                        cursor + 1,
+                        self._format_teacher_leave_periods(
+                            teacher_leave.unavailable_period_ids,
+                            document,
+                        ),
+                    )
+                    self._style_teacher_leave_cell(period_cell)
+                cursor += required_cells
+            room_offset += len(campus.rooms)
+
+    def _style_teacher_leave_cell(self, cell: Cell) -> None:
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    def _format_teacher_leave_periods(
+        self,
+        unavailable_period_ids: tuple[str, ...],
+        document: TimetableDocumentModel,
+    ) -> str:
+        period_positions = {
+            period.period_id: index for index, period in enumerate(document.periods)
+        }
+        period_names = {period.period_id: period.period_name for period in document.periods}
+        sorted_ids = sorted(
+            unavailable_period_ids,
+            key=period_positions.__getitem__,
+        )
+        runs: list[list[str]] = []
+        for period_id in sorted_ids:
+            if not runs or period_positions[period_id] != period_positions[runs[-1][-1]] + 1:
+                runs.append([period_id])
+            else:
+                runs[-1].append(period_id)
+        parts: list[str] = []
+        for run in runs:
+            if len(run) >= 3:
+                parts.append(f"{period_names[run[0]]}～{period_names[run[-1]]}")  # noqa: RUF001
+            else:
+                parts.append("".join(period_names[period_id] for period_id in run))
+        return "".join(parts)
 
     def _apply_merged_cell_borders(
         self,

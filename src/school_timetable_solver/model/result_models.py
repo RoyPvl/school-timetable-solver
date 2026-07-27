@@ -92,9 +92,17 @@ class OutputLessonModel:
 
 
 @dataclass(frozen=True, slots=True)
+class OutputTeacherLeaveModel:
+    teacher_display_name: str
+    campus_id: str
+    unavailable_period_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DailyTimetableModel:
     target_date: date
     lessons_by_period_and_room: Mapping[tuple[str, str], OutputLessonModel]
+    teacher_leaves: tuple[OutputTeacherLeaveModel, ...]
 
 
 @dataclass(frozen=True, slots=True)

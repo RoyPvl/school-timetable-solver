@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from school_timetable_solver.model.input_models import InputDataModel
+from school_timetable_solver.model.input_models import InputDataModel, TeacherLeaveModel
 from school_timetable_solver.model.result_models import (
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
@@ -59,10 +59,14 @@ def _lesson(
     )
 
 
-def test_validate_result_reports_output_date_availability_allowed_period_and_campus(
+def test_validate_result_reports_output_date_teacher_leave_allowed_period_and_campus(
     minimal_input_data: InputDataModel,
 ) -> None:
-    resolved = RuleResolverService().execute(minimal_input_data)
+    input_data = replace(
+        minimal_input_data,
+        teacher_leaves=(TeacherLeaveModel("T1", date(2026, 7, 27), ("P6",)),),
+    )
+    resolved = RuleResolverService().execute(input_data)
     lessons = (
         _lesson(period_id="P6", room_id="R3"),
         _lesson(
@@ -84,7 +88,7 @@ def test_validate_result_reports_output_date_availability_allowed_period_and_cam
         ),
     )
 
-    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+    report = ValidateResultService().execute(input_data, resolved, lessons)
     rule_ids = {issue.rule_id for issue in report.issues}
 
     assert {"H04", "H05", "H06", "H11", "H13", "H14"} <= rule_ids
@@ -233,6 +237,50 @@ def test_result_validator_allows_room_reuse_after_one_empty_period(
     report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
 
     assert not [issue for issue in report.issues if issue.rule_id in {"H15", "S10", "S11"}]
+    assert len([issue for issue in report.issues if issue.rule_id == "S12"]) == 2
+
+
+def test_result_validator_warns_only_for_exactly_one_lesson_class_days(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (
+        _lesson(requirement_id="Q1", period_id="P1", class_id="CL1"),
+        _lesson(requirement_id="Q2", period_id="P2", class_id="CL1"),
+        _lesson(
+            requirement_id="Q3",
+            teacher_id="T2",
+            room_id="R3",
+            campus_id="C2",
+            class_id="CL2",
+            subject_id="S2",
+        ),
+    )
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+    s12_issues = [issue for issue in report.issues if issue.rule_id == "S12"]
+
+    assert len(s12_issues) == 1
+    assert "CL2" in s12_issues[0].target
+    assert s12_issues[0].severity == "WARNING"
+
+
+def test_result_validator_warns_for_each_adjacent_same_subject_pair(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (
+        _lesson(requirement_id="Q1", period_id="P1", teacher_id="T1", subject_id="S1"),
+        _lesson(requirement_id="Q2", period_id="P2", teacher_id="T2", subject_id="S1"),
+        _lesson(requirement_id="Q3", period_id="P3", teacher_id="T1", subject_id="S1"),
+        _lesson(requirement_id="Q4", period_id="P4", teacher_id="T2", subject_id="S2"),
+    )
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+    s13_issues = [issue for issue in report.issues if issue.rule_id == "S13"]
+
+    assert len(s13_issues) == 2
+    assert all(issue.severity == "WARNING" for issue in s13_issues)
 
 
 def test_result_validator_rejects_two_consecutive_empty_periods_between_lessons(

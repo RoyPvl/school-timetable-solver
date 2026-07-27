@@ -109,5 +109,5 @@ def test_hard_constraint_registration_has_unique_formal_rule_ids() -> None:
 def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
     rule_ids = [constraint.rule_id for constraint in DEFAULT_SOFT_CONSTRAINTS]
     assert len(rule_ids) == len(set(rule_ids))
-    assert set(rule_ids) == {"S10", "S11"}
+    assert set(rule_ids) == {"S10", "S11", "S12", "S13"}
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)

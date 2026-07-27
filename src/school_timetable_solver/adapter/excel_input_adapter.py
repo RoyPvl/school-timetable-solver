@@ -14,7 +14,7 @@ from school_timetable_solver.model.input_models import (
     InputWorkbookSettingsModel,
     LessonRequirementModel,
     PlacementRuleModel,
-    TeacherAvailabilityModel,
+    TeacherLeaveModel,
 )
 from school_timetable_solver.model.master_models import (
     CampusModel,
@@ -31,7 +31,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.1 workbooks into Excel-independent models."""
+    """Read input-contract v0.3 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -56,7 +56,13 @@ class ExcelInputReaderAdapter:
             "enabled",
             "note",
         ),
-        "06_教師": ("teacher_id", "teacher_name", "enabled", "note"),
+        "06_教師": (
+            "teacher_id",
+            "teacher_name",
+            "home_campus_id",
+            "enabled",
+            "note",
+        ),
         "07_クラス": (
             "class_id",
             "class_name",
@@ -79,15 +85,10 @@ class ExcelInputReaderAdapter:
             "enabled",
             "note",
         ),
-        "10_教師勤務": (
+        "10_教師休み": (
             "teacher_id",
             "date",
-            "period_1_available",
-            "period_2_available",
-            "period_3_available",
-            "period_4_available",
-            "period_5_available",
-            "period_6_available",
+            "unavailable_periods",
             "note",
         ),
         "11_配置ルール": (
@@ -165,7 +166,11 @@ class ExcelInputReaderAdapter:
         classes = self._read_classes(rows_by_sheet["07_クラス"], issues)
         subjects = self._read_subjects(rows_by_sheet["08_教科"], issues)
         requirements = self._read_requirements(rows_by_sheet["09_授業要求"], issues)
-        availability = self._read_availability(rows_by_sheet["10_教師勤務"], periods, issues)
+        teacher_leaves = self._read_teacher_leaves(
+            rows_by_sheet["10_教師休み"],
+            periods,
+            issues,
+        )
         placement_rules = self._read_placement_rules(rows_by_sheet["11_配置ルール"], issues)
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
@@ -180,7 +185,7 @@ class ExcelInputReaderAdapter:
                 classes=tuple(classes),
                 subjects=tuple(subjects),
                 lesson_requirements=tuple(requirements),
-                teacher_availability=tuple(availability),
+                teacher_leaves=tuple(teacher_leaves),
                 placement_rules=tuple(placement_rules),
             ),
             tuple(issues),
@@ -280,7 +285,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.1":
+        if schema_version is not None and schema_version != "0.3":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -423,14 +428,29 @@ class ExcelInputReaderAdapter:
             values = (
                 self._text(row["teacher_id"], "06_教師", row_number, "teacher_id", issues),
                 self._text(row["teacher_name"], "06_教師", row_number, "teacher_name", issues),
+                self._text(
+                    row["home_campus_id"],
+                    "06_教師",
+                    row_number,
+                    "home_campus_id",
+                    issues,
+                ),
                 self._boolean(row["enabled"], "06_教師", row_number, "enabled", issues),
             )
             if None not in values:
-                teacher_id, teacher_name, enabled = values
+                teacher_id, teacher_name, home_campus_id, enabled = values
                 assert teacher_id is not None
                 assert teacher_name is not None
+                assert home_campus_id is not None
                 assert enabled is not None
-                result.append(TeacherModel(teacher_id, teacher_name, enabled))
+                result.append(
+                    TeacherModel(
+                        teacher_id,
+                        teacher_name,
+                        home_campus_id,
+                        enabled,
+                    )
+                )
         return result
 
     def _read_classes(
@@ -561,39 +581,58 @@ class ExcelInputReaderAdapter:
                 )
         return result
 
-    def _read_availability(
+    def _read_teacher_leaves(
         self,
         rows: list[tuple[int, dict[str, object]]],
         periods: list[PeriodModel],
         issues: list[ValidationIssueModel],
-    ) -> list[TeacherAvailabilityModel]:
-        periods_by_order = {period.output_order: period.period_id for period in periods}
-        result: list[TeacherAvailabilityModel] = []
+    ) -> list[TeacherLeaveModel]:
+        period_ids = tuple(period.period_id for period in periods)
+        result: list[TeacherLeaveModel] = []
         for row_number, row in rows:
             teacher_id = self._text(
-                row["teacher_id"], "10_教師勤務", row_number, "teacher_id", issues
+                row["teacher_id"], "10_教師休み", row_number, "teacher_id", issues
             )
-            target_date = self._date(row["date"], "10_教師勤務", row_number, "date", issues)
-            flags = [
-                self._boolean(
-                    row[f"period_{order}_available"],
-                    "10_教師勤務",
-                    row_number,
-                    f"period_{order}_available",
-                    issues,
+            target_date = self._date(row["date"], "10_教師休み", row_number, "date", issues)
+            unavailable_periods = self._text(
+                row["unavailable_periods"],
+                "10_教師休み",
+                row_number,
+                "unavailable_periods",
+                issues,
+            )
+            unavailable_period_ids: tuple[str, ...] = ()
+            if unavailable_periods is not None:
+                values = tuple(
+                    part.strip() for part in unavailable_periods.split("|") if part.strip()
                 )
-                for order in range(1, 7)
-            ]
-            if teacher_id is not None and target_date is not None and None not in flags:
-                result.extend(
-                    TeacherAvailabilityModel(
-                        teacher_id,
-                        target_date,
-                        periods_by_order[order],
-                        bool(available),
+                if "ALL" in values:
+                    if values == ("ALL",):
+                        unavailable_period_ids = period_ids
+                    else:
+                        issues.append(
+                            self._cell_issue(
+                                "INVALID_TEACHER_LEAVE_PERIODS",
+                                "10_教師休み",
+                                row_number,
+                                "unavailable_periods",
+                                "ALLは個別の時限IDと併記できません",
+                            )
+                        )
+                else:
+                    unavailable_period_ids = values
+            if (
+                teacher_id is not None
+                and target_date is not None
+                and unavailable_periods is not None
+                and unavailable_period_ids
+            ):
+                result.append(
+                    TeacherLeaveModel(
+                        teacher_id=teacher_id,
+                        target_date=target_date,
+                        unavailable_period_ids=unavailable_period_ids,
                     )
-                    for order, available in enumerate(flags, start=1)
-                    if order in periods_by_order
                 )
         return result
 

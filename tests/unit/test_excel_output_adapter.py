@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from openpyxl import load_workbook
 from school_timetable_solver.adapter.excel_output_adapter import (
     ExcelTimetableWriterAdapter,
 )
-from school_timetable_solver.model.input_models import InputDataModel
+from school_timetable_solver.model.input_models import InputDataModel, TeacherLeaveModel
 from school_timetable_solver.model.result_models import ScheduledLessonModel
 from school_timetable_solver.service.result_services import BuildTimetableDocumentService
 
@@ -94,3 +95,101 @@ def test_writer_places_dates_left_right_then_down_and_leaves_odd_slot_blank(
             assert cell.border.right.style is None
     assert worksheet.cell(24, 1).value is not None
     assert worksheet.cell(26, 3).value is None
+
+
+def test_writer_places_teacher_leaves_by_home_campus_and_formats_periods(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        teachers=(
+            minimal_input_data.teachers[0],
+            replace(minimal_input_data.teachers[1], home_campus_id="C1"),
+        ),
+        teacher_leaves=(
+            TeacherLeaveModel(
+                "T1",
+                minimal_input_data.calendar_days[0].target_date,
+                tuple(period.period_id for period in minimal_input_data.periods),
+            ),
+            TeacherLeaveModel(
+                "T2",
+                minimal_input_data.calendar_days[0].target_date,
+                tuple(period.period_id for period in minimal_input_data.periods),
+            ),
+            TeacherLeaveModel(
+                "T1",
+                minimal_input_data.calendar_days[1].target_date,
+                ("P1", "P2"),
+            ),
+            TeacherLeaveModel(
+                "T1",
+                minimal_input_data.calendar_days[2].target_date,
+                ("P3", "P4", "P5"),
+            ),
+        ),
+    )
+    document = BuildTimetableDocumentService().execute(input_data, ())
+    output = tmp_path / "teacher-leaves.xlsx"
+
+    writer = ExcelTimetableWriterAdapter()
+    writer.write(document, output)
+
+    worksheet = load_workbook(output)["全体"]
+    matrix_width = 2 + len(minimal_input_data.rooms)
+    right_start = 1 + matrix_width + 1
+    assert worksheet["C22"].value == "教師一"
+    assert worksheet["D22"].value == "教師二"
+    assert worksheet.cell(22, right_start + 2).value == "教師一"
+    assert worksheet.cell(22, right_start + 3).value == "①②"
+    assert worksheet["C44"].value == "教師一"
+    assert worksheet["D44"].value == "③～⑤"  # noqa: RUF001
+    assert worksheet["C22"].border.left.style is None
+    assert (worksheet["C22"].font.name, worksheet["C22"].font.sz) == (
+        worksheet["C21"].font.name,
+        worksheet["C21"].font.sz,
+    )
+    assert worksheet["C22"].alignment.horizontal == "center"
+    assert worksheet.row_dimensions[22].height == worksheet.row_dimensions[21].height
+
+    assert writer._format_teacher_leave_periods(("P1",), document) == "①"
+    assert writer._format_teacher_leave_periods(("P1", "P2", "P5"), document) == "①②⑤"
+    assert (
+        writer._format_teacher_leave_periods(
+            ("P1", "P2", "P3", "P5"),
+            document,
+        )
+        == "①～③⑤"  # noqa: RUF001
+    )
+
+
+def test_document_rejects_teacher_leave_output_overflow(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        teachers=(
+            minimal_input_data.teachers[0],
+            replace(minimal_input_data.teachers[1], home_campus_id="C1"),
+        ),
+        teacher_leaves=(
+            TeacherLeaveModel(
+                "T1",
+                minimal_input_data.calendar_days[0].target_date,
+                ("P1",),
+            ),
+            TeacherLeaveModel(
+                "T2",
+                minimal_input_data.calendar_days[0].target_date,
+                ("P2",),
+            ),
+        ),
+    )
+
+    try:
+        BuildTimetableDocumentService().execute(input_data, ())
+    except ValueError as error:
+        assert "OUTPUT_TEACHER_LEAVE_OVERFLOW" in str(error)
+    else:
+        raise AssertionError("教師休みの出力領域超過が検出されませんでした")

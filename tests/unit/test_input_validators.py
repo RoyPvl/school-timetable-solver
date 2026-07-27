@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 
-from school_timetable_solver.model.input_models import InputDataModel
+from school_timetable_solver.model.input_models import InputDataModel, TeacherLeaveModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
@@ -51,6 +52,7 @@ def test_validator_detects_unknown_and_disabled_references(
             minimal_input_data.lesson_requirements[0],
             replace(minimal_input_data.lesson_requirements[1], subject_id="UNKNOWN"),
         ),
+        teacher_leaves=(TeacherLeaveModel("T1", date(2026, 8, 1), ("UNKNOWN",)),),
     )
 
     rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
@@ -58,7 +60,28 @@ def test_validator_detects_unknown_and_disabled_references(
     assert {"UNKNOWN_REFERENCE", "DISABLED_MASTER_REFERENCE"} <= rule_ids
 
 
-def test_validator_detects_requirement_and_availability_duplicates(
+def test_validator_detects_unknown_teacher_home_campus(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        teachers=(
+            replace(minimal_input_data.teachers[0], home_campus_id="UNKNOWN"),
+            minimal_input_data.teachers[1],
+        ),
+    )
+
+    issues = ReferenceIntegrityValidator().validate(invalid)
+
+    assert any(
+        issue.rule_id == "UNKNOWN_REFERENCE"
+        and issue.target == "T1"
+        and "home_campus_id" in issue.message
+        for issue in issues
+    )
+
+
+def test_validator_detects_requirement_and_teacher_leave_duplicates(
     minimal_input_data: InputDataModel,
 ) -> None:
     invalid = replace(
@@ -71,9 +94,13 @@ def test_validator_detects_requirement_and_availability_duplicates(
                 subject_id="S1",
             ),
         ),
-        teacher_availability=(
-            *minimal_input_data.teacher_availability,
-            minimal_input_data.teacher_availability[0],
+        teacher_leaves=(
+            TeacherLeaveModel("T1", minimal_input_data.calendar_days[0].target_date, ("P1",)),
+            TeacherLeaveModel(
+                "T1",
+                minimal_input_data.calendar_days[0].target_date,
+                ("P2", "P2"),
+            ),
         ),
     )
 
@@ -81,7 +108,8 @@ def test_validator_detects_requirement_and_availability_duplicates(
 
     assert {
         "DUPLICATE_CLASS_SUBJECT_REQUIREMENT",
-        "DUPLICATE_TEACHER_AVAILABILITY",
+        "DUPLICATE_TEACHER_LEAVE",
+        "DUPLICATE_TEACHER_LEAVE_PERIOD",
     } <= rule_ids
 
 
@@ -124,20 +152,26 @@ def test_validator_detects_invalid_period_range_and_rule_columns(
 def test_capacity_validator_uses_resolved_candidates(
     minimal_input_data: InputDataModel,
 ) -> None:
-    no_teacher_one_availability = replace(
+    teacher_one_full_leave = replace(
         minimal_input_data,
-        teacher_availability=tuple(
-            item for item in minimal_input_data.teacher_availability if item.teacher_id != "T1"
+        teacher_leaves=tuple(
+            TeacherLeaveModel(
+                "T1",
+                calendar_day.target_date,
+                tuple(period.period_id for period in minimal_input_data.periods),
+            )
+            for calendar_day in minimal_input_data.calendar_days
+            if calendar_day.output_enabled
         ),
     )
-    resolved = RuleResolverService().execute(no_teacher_one_availability)
+    resolved = RuleResolverService().execute(teacher_one_full_leave)
     candidates = CandidateBuilderService().execute(
-        no_teacher_one_availability,
+        teacher_one_full_leave,
         resolved,
     )
 
     issues = CapacityFeasibilityValidator().validate(
-        no_teacher_one_availability,
+        teacher_one_full_leave,
         resolved,
         candidates,
     )
