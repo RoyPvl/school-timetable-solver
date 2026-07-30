@@ -7,7 +7,11 @@ from pathlib import Path
 from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
 from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
-from school_timetable_solver.model.input_models import GenerationMode, InputDataModel
+from school_timetable_solver.model.input_models import (
+    GenerationMode,
+    InputDataModel,
+    LessonCountRuleSegmentModel,
+)
 from school_timetable_solver.model.result_models import GenerationRequestModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
@@ -64,6 +68,7 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
         input_data,
         resolved,
         lessons,
+        candidates,
     )
     document = BuildTimetableDocumentService().execute(
         input_data,
@@ -132,14 +137,64 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert sorted(lesson_counts.values()) == [1, 1, 2]
-    assert solver_result.statistics.constraint_rule_ids[-6:] == (
+    assert solver_result.statistics.constraint_rule_ids[-7:] == (
         "S14",
         "S15",
         "S11",
         "S12",
+        "S16",
         "S13",
         "S10",
     )
+
+
+def test_h17_places_exact_count_in_resolved_scope(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "LC1",
+                "LC1_SEG1",
+                "初日1コマ",
+                True,
+                "CL1",
+                "S1",
+                1,
+                minimal_input_data.calendar_days[0].target_date,
+                minimal_input_data.calendar_days[0].target_date,
+                ("ALL",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    request = GenerationRequestModel(
+        tmp_path / "input.xlsx",
+        tmp_path / "output.xlsx",
+        None,
+        GenerationMode.STRICT,
+        10.0,
+        1,
+        1,
+    )
+
+    solver_result = TimetableSolverService(
+        DEFAULT_HARD_CONSTRAINTS,
+        DEFAULT_SOFT_CONSTRAINTS,
+    ).execute(request, input_data, resolved, candidates)
+    scoped_lessons = [
+        lesson
+        for lesson in solver_result.lessons
+        if lesson.requirement_id == "Q1"
+        and lesson.target_date == minimal_input_data.calendar_days[0].target_date
+    ]
+
+    assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
+    assert len(scoped_lessons) == 1
+    assert "H17" in solver_result.statistics.constraint_rule_ids
 
 
 def test_lower_priority_s13_mixes_subjects_without_worsening_s11_or_s12(

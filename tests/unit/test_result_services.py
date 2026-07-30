@@ -5,12 +5,19 @@ from datetime import date
 
 import pytest
 
-from school_timetable_solver.model.input_models import InputDataModel, TeacherLeaveModel
+from school_timetable_solver.model.input_models import (
+    InputDataModel,
+    LessonCountRuleSegmentModel,
+    TeacherLeaveModel,
+)
 from school_timetable_solver.model.result_models import (
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
 )
-from school_timetable_solver.service.planning_services import RuleResolverService
+from school_timetable_solver.service.planning_services import (
+    CandidateBuilderService,
+    RuleResolverService,
+)
 from school_timetable_solver.service.result_services import (
     AssignRoomsService,
     BuildTimetableDocumentService,
@@ -203,6 +210,37 @@ def test_result_validator_reports_required_count_and_overlaps(
     assert {"H01", "H02", "H03", "H06"} <= {issue.rule_id for issue in report.issues}
 
 
+def test_result_validator_reports_lesson_count_in_scope(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "LC1",
+                "LC1_SEG1",
+                "初日1コマ",
+                True,
+                "CL1",
+                "S1",
+                1,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("ALL",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = (
+        _lesson(requirement_id="Q1", period_id="P1"),
+        _lesson(requirement_id="Q1", period_id="P2"),
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    assert "H17" in {issue.rule_id for issue in report.issues}
+
+
 def test_result_validator_reports_room_move_and_warns_room_change_without_gap(
     minimal_input_data: InputDataModel,
 ) -> None:
@@ -352,6 +390,60 @@ def test_result_validator_does_not_treat_the_next_output_date_as_next_calendar_d
 
     assert len([issue for issue in report.issues if issue.rule_id == "S14"]) == 1
     assert not [issue for issue in report.issues if issue.rule_id == "S15"]
+
+
+def test_result_validator_recomputes_s16_from_candidate_capacity(
+    minimal_input_data: InputDataModel,
+) -> None:
+    dates = tuple(date(2026, 7, 27 + offset) for offset in range(4))
+    input_data = replace(
+        minimal_input_data,
+        calendar_days=tuple(
+            replace(
+                minimal_input_data.calendar_days[0],
+                target_date=target_date,
+                enabled_period_ids=("P1",),
+            )
+            for target_date in dates
+        ),
+        campuses=(minimal_input_data.campuses[0],),
+        rooms=minimal_input_data.rooms[:2],
+        teachers=(minimal_input_data.teachers[0],),
+        classes=(minimal_input_data.classes[0],),
+        subjects=(minimal_input_data.subjects[0],),
+        lesson_requirements=(minimal_input_data.lesson_requirements[0],),
+        teacher_leaves=(),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    balanced_lessons = (
+        _lesson(target_date=dates[0]),
+        _lesson(target_date=dates[2]),
+    )
+    clustered_lessons = (
+        _lesson(target_date=dates[0]),
+        _lesson(target_date=dates[1]),
+    )
+
+    balanced_report = ValidateResultService().execute(
+        input_data,
+        resolved,
+        balanced_lessons,
+        candidates,
+    )
+    clustered_report = ValidateResultService().execute(
+        input_data,
+        resolved,
+        clustered_lessons,
+        candidates,
+    )
+    balanced_s16 = [issue for issue in balanced_report.issues if issue.rule_id == "S16"]
+    clustered_s16 = [issue for issue in clustered_report.issues if issue.rule_id == "S16"]
+
+    assert not balanced_s16
+    assert len(clustered_s16) == 1
+    assert clustered_s16[0].severity == "WARNING"
+    assert "score=" in clustered_s16[0].message
 
 
 def test_result_validator_rejects_two_consecutive_empty_periods_between_lessons(

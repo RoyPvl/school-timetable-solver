@@ -12,6 +12,7 @@ from school_timetable_solver.model.input_models import (
     CalendarDayModel,
     InputDataModel,
     InputWorkbookSettingsModel,
+    LessonCountRuleSegmentModel,
     LessonRequirementModel,
     PlacementRuleModel,
     TeacherLeaveModel,
@@ -31,7 +32,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.3 workbooks into Excel-independent models."""
+    """Read input-contract v0.4 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -112,6 +113,19 @@ class ExcelInputReaderAdapter:
             "note",
         ),
         "12_選好設定": ("rule_id", "enabled", "weight", "note"),
+        "13_授業配置数ルール": (
+            "rule_id",
+            "segment_id",
+            "rule_name",
+            "enabled",
+            "class_id",
+            "subject_id",
+            "exact_periods",
+            "start_date",
+            "end_date",
+            "target_periods",
+            "note",
+        ),
     }
     _required_sheets: ClassVar[tuple[str, ...]] = (
         "00_操作説明",
@@ -172,6 +186,10 @@ class ExcelInputReaderAdapter:
             issues,
         )
         placement_rules = self._read_placement_rules(rows_by_sheet["11_配置ルール"], issues)
+        lesson_count_rule_segments = self._read_lesson_count_rule_segments(
+            rows_by_sheet["13_授業配置数ルール"],
+            issues,
+        )
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
         return InputReadResultModel(
@@ -187,6 +205,7 @@ class ExcelInputReaderAdapter:
                 lesson_requirements=tuple(requirements),
                 teacher_leaves=tuple(teacher_leaves),
                 placement_rules=tuple(placement_rules),
+                lesson_count_rule_segments=tuple(lesson_count_rule_segments),
             ),
             tuple(issues),
         )
@@ -285,7 +304,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.3":
+        if schema_version is not None and schema_version != "0.4":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -328,6 +347,128 @@ class ExcelInputReaderAdapter:
                         end_time=end_time,
                     )
                 )
+        return result
+
+    def _read_lesson_count_rule_segments(
+        self,
+        rows: list[tuple[int, dict[str, object]]],
+        issues: list[ValidationIssueModel],
+    ) -> list[LessonCountRuleSegmentModel]:
+        result: list[LessonCountRuleSegmentModel] = []
+        for row_number, row in rows:
+            target_periods = self._text(
+                row["target_periods"],
+                "13_授業配置数ルール",
+                row_number,
+                "target_periods",
+                issues,
+            )
+            required = (
+                self._text(
+                    row["rule_id"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "rule_id",
+                    issues,
+                ),
+                self._text(
+                    row["segment_id"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "segment_id",
+                    issues,
+                ),
+                self._text(
+                    row["rule_name"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "rule_name",
+                    issues,
+                ),
+                self._boolean(
+                    row["enabled"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "enabled",
+                    issues,
+                ),
+                self._text(
+                    row["class_id"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "class_id",
+                    issues,
+                ),
+                self._text(
+                    row["subject_id"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "subject_id",
+                    issues,
+                ),
+                self._integer(
+                    row["exact_periods"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "exact_periods",
+                    issues,
+                ),
+                self._date(
+                    row["start_date"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "start_date",
+                    issues,
+                ),
+                self._date(
+                    row["end_date"],
+                    "13_授業配置数ルール",
+                    row_number,
+                    "end_date",
+                    issues,
+                ),
+                target_periods,
+            )
+            if None in required:
+                continue
+            (
+                rule_id,
+                segment_id,
+                rule_name,
+                enabled,
+                class_id,
+                subject_id,
+                exact_periods,
+                start_date,
+                end_date,
+                target_periods,
+            ) = required
+            assert isinstance(rule_id, str)
+            assert isinstance(segment_id, str)
+            assert isinstance(rule_name, str)
+            assert isinstance(enabled, bool)
+            assert isinstance(class_id, str)
+            assert isinstance(subject_id, str)
+            assert isinstance(exact_periods, int)
+            assert isinstance(start_date, date)
+            assert isinstance(end_date, date)
+            assert isinstance(target_periods, str)
+            result.append(
+                LessonCountRuleSegmentModel(
+                    rule_id=rule_id,
+                    segment_id=segment_id,
+                    rule_name=rule_name,
+                    enabled=enabled,
+                    class_id=class_id,
+                    subject_id=subject_id,
+                    exact_periods=exact_periods,
+                    start_date=start_date,
+                    end_date=end_date,
+                    target_period_ids=tuple(
+                        part.strip() for part in target_periods.split("|") if part.strip()
+                    ),
+                )
+            )
         return result
 
     def _read_calendar(
@@ -427,7 +568,7 @@ class ExcelInputReaderAdapter:
         for row_number, row in rows:
             values = (
                 self._text(row["teacher_id"], "06_教師", row_number, "teacher_id", issues),
-                self._text(row["teacher_name"], "06_教師", row_number, "teacher_name", issues),
+                self._teacher_name(row["teacher_name"], row_number, issues),
                 self._text(
                     row["home_campus_id"],
                     "06_教師",
@@ -452,6 +593,48 @@ class ExcelInputReaderAdapter:
                     )
                 )
         return result
+
+    def _teacher_name(
+        self,
+        value: object,
+        row: int,
+        issues: list[ValidationIssueModel],
+    ) -> str | None:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        issues.append(
+            self._cell_issue(
+                "REQUIRED_TEXT_INVALID",
+                "06_教師",
+                row,
+                "teacher_name",
+                "teacher_nameは文字列型で入力してください",
+            )
+        )
+        return None
+
+    def _subject_name(
+        self,
+        value: object,
+        row: int,
+        issues: list[ValidationIssueModel],
+    ) -> str | None:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        issues.append(
+            self._cell_issue(
+                "REQUIRED_TEXT_INVALID",
+                "08_教科",
+                row,
+                "subject_name",
+                "subject_nameは文字列型で入力してください",
+            )
+        )
+        return None
 
     def _read_classes(
         self,
@@ -511,7 +694,7 @@ class ExcelInputReaderAdapter:
         for row_number, row in rows:
             values = (
                 self._text(row["subject_id"], "08_教科", row_number, "subject_id", issues),
-                self._text(row["subject_name"], "08_教科", row_number, "subject_name", issues),
+                self._subject_name(row["subject_name"], row_number, issues),
                 self._boolean(row["enabled"], "08_教科", row_number, "enabled", issues),
             )
             if None not in values:

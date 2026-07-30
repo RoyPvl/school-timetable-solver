@@ -19,7 +19,10 @@ from school_timetable_solver.model.result_models import (
     ValidationIssueModel,
     ValidationReportModel,
 )
-from school_timetable_solver.model.solver_models import ResolvedRuleSetModel
+from school_timetable_solver.model.solver_models import (
+    CandidateBuildResultModel,
+    ResolvedRuleSetModel,
+)
 
 
 class AssignRoomsService:
@@ -83,9 +86,11 @@ class ValidateResultService:
         input_data: InputDataModel,
         resolved_rules: ResolvedRuleSetModel,
         lessons: tuple[ScheduledLessonModel, ...],
+        candidate_result: CandidateBuildResultModel | None = None,
     ) -> ValidationReportModel:
         issues: list[ValidationIssueModel] = []
         self._validate_required_counts(input_data, lessons, issues)
+        self._validate_lesson_counts_in_scope(resolved_rules, lessons, issues)
         self._validate_overlaps(lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
@@ -103,8 +108,43 @@ class ValidateResultService:
             issues,
         )
         self._report_class_subject_daily_repeat_preference(lessons, issues)
+        if candidate_result is not None:
+            self._report_class_subject_schedule_balance_preference(
+                input_data,
+                resolved_rules,
+                candidate_result,
+                lessons,
+                issues,
+            )
         self._report_class_subject_double_then_next_day_preference(lessons, issues)
         return ValidationReportModel(tuple(issues))
+
+    def _validate_lesson_counts_in_scope(
+        self,
+        resolved_rules: ResolvedRuleSetModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        lesson_slots_by_requirement: dict[str, set[tuple[date, str]]] = defaultdict(set)
+        for lesson in lessons:
+            lesson_slots_by_requirement[lesson.requirement_id].add(
+                (lesson.target_date, lesson.period_id)
+            )
+        for rule in resolved_rules.lesson_count_rules:
+            generated = len(
+                lesson_slots_by_requirement[rule.requirement_id].intersection(rule.target_slots)
+            )
+            if generated != rule.exact_periods:
+                issues.append(
+                    self._issue(
+                        "H17",
+                        rule.rule_id,
+                        (
+                            "指定範囲内授業数不一致: "
+                            f"exact={rule.exact_periods}, generated={generated}"
+                        ),
+                    )
+                )
 
     def _validate_required_counts(
         self,
@@ -588,6 +628,86 @@ class ValidateResultService:
                     (
                         "同日2コマ以上の翌日にも同じ教科が配置されています: "
                         f"同日コマ数={lesson_count}"
+                    ),
+                )
+            )
+
+    def _report_class_subject_schedule_balance_preference(
+        self,
+        input_data: InputDataModel,
+        resolved_rules: ResolvedRuleSetModel,
+        candidate_result: CandidateBuildResultModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        score_scale = 1000
+        requirements = {
+            requirement.requirement_id: requirement
+            for requirement in input_data.lesson_requirements
+            if requirement.enabled
+        }
+        class_limits = {
+            (rule.class_id, rule.target_date): rule.daily_hard_limit
+            for rule in resolved_rules.class_date_rules
+        }
+        period_ids_by_requirement_day: dict[tuple[str, date], set[str]] = defaultdict(set)
+        dates_by_requirement: dict[str, set[date]] = defaultdict(set)
+        for candidate in candidate_result.candidates:
+            key = (candidate.requirement_id, candidate.target_date)
+            period_ids_by_requirement_day[key].add(candidate.period_id)
+            dates_by_requirement[candidate.requirement_id].add(candidate.target_date)
+        generated_counts = Counter(
+            (lesson.requirement_id, lesson.target_date) for lesson in lessons
+        )
+
+        for requirement_id, candidate_dates in dates_by_requirement.items():
+            requirement = requirements[requirement_id]
+            dates = sorted(candidate_dates)
+            if requirement.required_periods <= 1 or len(dates) <= 1:
+                continue
+
+            daily_capacities = []
+            for target_date in dates:
+                capacity = len(period_ids_by_requirement_day[(requirement_id, target_date)])
+                if requirement.max_periods_per_day is not None:
+                    capacity = min(capacity, requirement.max_periods_per_day)
+                class_limit = class_limits.get((requirement.class_id, target_date))
+                if class_limit is not None:
+                    capacity = min(capacity, class_limit)
+                daily_capacities.append(min(capacity, requirement.required_periods))
+
+            total_capacity = sum(daily_capacities)
+            if total_capacity <= requirement.required_periods:
+                continue
+
+            cumulative_capacity = 0
+            cumulative_generated = 0
+            deviation_sum = 0
+            for target_date, daily_capacity in zip(
+                dates[:-1],
+                daily_capacities[:-1],
+                strict=True,
+            ):
+                cumulative_capacity += daily_capacity
+                cumulative_generated += generated_counts[(requirement_id, target_date)]
+                target_count = (
+                    2 * requirement.required_periods * cumulative_capacity + total_capacity
+                ) // (2 * total_capacity)
+                deviation_sum += abs(cumulative_generated - target_count)
+
+            denominator = requirement.required_periods * (len(dates) - 1)
+            normalized_score = (score_scale * deviation_sum + denominator - 1) // denominator
+            if normalized_score == 0:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S16",
+                    "WARNING",
+                    f"{requirement.class_id}/{requirement.subject_id}",
+                    (
+                        "日程全体に対する教科配置の累積バランスに偏りがあります: "
+                        f"score={normalized_score}/{score_scale}, "
+                        f"cumulative_deviation={deviation_sum}"
                     ),
                 )
             )

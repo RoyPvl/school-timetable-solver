@@ -10,12 +10,16 @@ from school_timetable_solver.constraint.hard_constraints import (
     ClassLongInternalGapConstraint,
     ClassOverlapConstraint,
     ClassRoomContinuityConstraint,
+    LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
     TeacherOverlapConstraint,
     TeacherSingleCampusPerDayConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
-from school_timetable_solver.model.solver_models import CandidateSlotModel
+from school_timetable_solver.model.solver_models import (
+    CandidateSlotModel,
+    ResolvedLessonCountRuleModel,
+)
 
 DAY_ONE = date(2026, 7, 27)
 DAY_TWO = date(2026, 7, 28)
@@ -131,6 +135,30 @@ def test_required_count_constraint_rejects_missing_assignment() -> None:
     context.model.add(context.assignment_variables["Q1__1"] == 0)
 
     assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h17_lesson_count_in_scope_requires_exact_count() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+        _candidate("Q1__2", "T1", DAY_ONE, "C1", "P2"),
+    )
+    context = _context(candidates)
+    context.lesson_count_rules = (
+        ResolvedLessonCountRuleModel(
+            "LC1",
+            "Q1",
+            "CL1",
+            "S1",
+            1,
+            ((DAY_ONE, "P1"), (DAY_ONE, "P2")),
+        ),
+    )
+    LessonCountInScopeConstraint().apply(context)
+    context.model.add(context.assignment_variables["Q1__1"] == 1)
+    context.model.add(context.assignment_variables["Q1__2"] == 1)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
 
 
 def test_class_overlap_constraint_rejects_same_class_slot() -> None:

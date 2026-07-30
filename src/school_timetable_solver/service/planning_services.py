@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date
 
-from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
+from school_timetable_solver.model.input_models import (
+    CalendarDayModel,
+    InputDataModel,
+    LessonCountRuleSegmentModel,
+    PlacementRuleModel,
+)
 from school_timetable_solver.model.master_models import ClassModel, TeacherModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
@@ -11,6 +16,7 @@ from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     EffectiveClassDateRuleModel,
     EffectiveTeacherDateRuleModel,
+    ResolvedLessonCountRuleModel,
     ResolvedRuleSetModel,
     RuleResolutionIssueModel,
 )
@@ -164,7 +170,83 @@ class RuleResolverService:
                         applied_rule_ids=tuple(dict.fromkeys(applied)),
                     )
                 )
-        return ResolvedRuleSetModel(tuple(class_rules), tuple(teacher_rules), tuple(issues))
+        lesson_count_rules = self._resolve_lesson_count_rules(
+            input_data,
+            output_days,
+            period_ids,
+            issues,
+        )
+        return ResolvedRuleSetModel(
+            class_date_rules=tuple(class_rules),
+            teacher_date_rules=tuple(teacher_rules),
+            issues=tuple(issues),
+            lesson_count_rules=tuple(lesson_count_rules),
+        )
+
+    def _resolve_lesson_count_rules(
+        self,
+        input_data: InputDataModel,
+        output_days: list[CalendarDayModel],
+        ordered_period_ids: tuple[str, ...],
+        issues: list[RuleResolutionIssueModel],
+    ) -> list[ResolvedLessonCountRuleModel]:
+        requirements_by_target: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for requirement in input_data.lesson_requirements:
+            if requirement.enabled:
+                requirements_by_target[(requirement.class_id, requirement.subject_id)].append(
+                    requirement.requirement_id
+                )
+        segments_by_rule: dict[str, list[LessonCountRuleSegmentModel]] = defaultdict(list)
+        for segment in input_data.lesson_count_rule_segments:
+            segments_by_rule[segment.rule_id].append(segment)
+
+        period_orders = {period_id: order for order, period_id in enumerate(ordered_period_ids)}
+        resolved: list[ResolvedLessonCountRuleModel] = []
+        for rule_id, segments in sorted(segments_by_rule.items()):
+            if not segments or not segments[0].enabled:
+                continue
+            target = (segments[0].class_id, segments[0].subject_id)
+            requirement_ids = requirements_by_target[target]
+            if len(requirement_ids) != 1:
+                issues.append(
+                    RuleResolutionIssueModel(
+                        "LESSON_COUNT_RULE_TARGET_UNRESOLVED",
+                        rule_id,
+                        (
+                            "有効なclass_id/subject_idの授業要求を一意に解決できません: "
+                            f"class_id={target[0]}, subject_id={target[1]}"
+                        ),
+                    )
+                )
+                continue
+            target_slots: set[tuple[date, str]] = set()
+            for segment in segments:
+                for calendar_day in output_days:
+                    target_date = calendar_day.target_date
+                    if not (segment.start_date <= target_date <= segment.end_date):
+                        continue
+                    period_ids = (
+                        calendar_day.enabled_period_ids
+                        if segment.target_period_ids == ("ALL",)
+                        else segment.target_period_ids
+                    )
+                    target_slots.update((target_date, period_id) for period_id in period_ids)
+            resolved.append(
+                ResolvedLessonCountRuleModel(
+                    rule_id=rule_id,
+                    requirement_id=requirement_ids[0],
+                    class_id=target[0],
+                    subject_id=target[1],
+                    exact_periods=segments[0].exact_periods,
+                    target_slots=tuple(
+                        sorted(
+                            target_slots,
+                            key=lambda item: (item[0], period_orders[item[1]]),
+                        )
+                    ),
+                )
+            )
+        return resolved
 
     def _matches_class(
         self,
@@ -318,6 +400,10 @@ class CandidateBuilderService:
         class_rules = {
             (item.class_id, item.target_date): item for item in resolved_rules.class_date_rules
         }
+        prohibited_slots_by_requirement: dict[str, set[tuple[date, str]]] = defaultdict(set)
+        for rule in resolved_rules.lesson_count_rules:
+            if rule.exact_periods == 0:
+                prohibited_slots_by_requirement[rule.requirement_id].update(rule.target_slots)
         output_days = [day for day in input_data.calendar_days if day.output_enabled]
         ordered_periods = sorted(input_data.periods, key=lambda item: item.output_order)
         candidates: list[CandidateSlotModel] = []
@@ -347,6 +433,12 @@ class CandidateBuilderService:
                         period.period_id,
                     ) in teacher_leave_slots:
                         rejection_counts[(requirement.requirement_id, "H05")] += 1
+                        continue
+                    if (
+                        calendar_day.target_date,
+                        period.period_id,
+                    ) in prohibited_slots_by_requirement[requirement.requirement_id]:
+                        rejection_counts[(requirement.requirement_id, "H17")] += 1
                         continue
                     candidate_id = "__".join(
                         (

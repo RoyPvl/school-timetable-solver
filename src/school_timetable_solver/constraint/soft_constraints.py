@@ -203,6 +203,106 @@ class ClassSubjectDailyRepeatPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassSubjectScheduleBalancePreferenceConstraint:
+    """S16: balance each class-subject requirement across its candidate dates."""
+
+    rule_id = "S16"
+    priority = 14
+    optimization_scope = "assignment"
+    _SCORE_SCALE = 1000
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_requirement_day: dict[
+            tuple[str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        period_ids_by_requirement_day: dict[tuple[str, date], set[str]] = defaultdict(set)
+        class_subject_by_requirement: dict[str, tuple[str, str]] = {}
+        for candidate in context.candidates:
+            key = (candidate.requirement_id, candidate.target_date)
+            variables_by_requirement_day[key].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+            period_ids_by_requirement_day[key].add(candidate.period_id)
+            class_subject_by_requirement[candidate.requirement_id] = (
+                candidate.class_id,
+                candidate.subject_id,
+            )
+
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(
+            self.priority,
+            {},
+        )
+        dates_by_requirement: dict[str, list[date]] = defaultdict(list)
+        for requirement_id, target_date in variables_by_requirement_day:
+            dates_by_requirement[requirement_id].append(target_date)
+
+        for requirement_id, unsorted_dates in dates_by_requirement.items():
+            required_count = context.required_counts[requirement_id]
+            dates = sorted(unsorted_dates)
+            if required_count <= 1 or len(dates) <= 1:
+                continue
+
+            daily_capacities = []
+            for target_date in dates:
+                capacity = len(period_ids_by_requirement_day[(requirement_id, target_date)])
+                requirement_limit = context.requirement_daily_limits[requirement_id]
+                if requirement_limit is not None:
+                    capacity = min(capacity, requirement_limit)
+                class_id, _ = class_subject_by_requirement[requirement_id]
+                class_limit = context.class_daily_limits.get((class_id, target_date))
+                if class_limit is not None:
+                    capacity = min(capacity, class_limit)
+                daily_capacities.append(min(capacity, required_count))
+
+            total_capacity = sum(daily_capacities)
+            if total_capacity <= required_count:
+                continue
+
+            cumulative_capacity = 0
+            cumulative_variables: list[cp_model.IntVar] = []
+            deviations: list[cp_model.IntVar] = []
+            for target_date, daily_capacity in zip(
+                dates[:-1],
+                daily_capacities[:-1],
+                strict=True,
+            ):
+                cumulative_capacity += daily_capacity
+                cumulative_variables.extend(
+                    variables_by_requirement_day[(requirement_id, target_date)]
+                )
+                target_count = (2 * required_count * cumulative_capacity + total_capacity) // (
+                    2 * total_capacity
+                )
+                deviation = context.model.new_int_var(
+                    0,
+                    required_count,
+                    "class_subject_schedule_balance_deviation__"
+                    f"{requirement_id}__{target_date.isoformat()}",
+                )
+                context.model.add_abs_equality(
+                    deviation,
+                    sum(cumulative_variables) - target_count,
+                )
+                deviations.append(deviation)
+
+            denominator = required_count * (len(dates) - 1)
+            normalized_score = context.model.new_int_var(
+                0,
+                self._SCORE_SCALE,
+                f"class_subject_schedule_balance_score__{requirement_id}",
+            )
+            scaled_deviation = self._SCORE_SCALE * sum(deviations)
+            context.model.add(normalized_score * denominator >= scaled_deviation)
+            context.model.add(normalized_score * denominator <= scaled_deviation + denominator - 1)
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(normalized_score)
+            penalty_groups.setdefault(
+                class_subject_by_requirement[requirement_id],
+                [],
+            ).append(normalized_score)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassSubjectDoubleThenNextDayPreferenceConstraint:
     """S15: minimize a subject recurring the day after a double lesson."""
 
@@ -372,6 +472,7 @@ DEFAULT_SOFT_CONSTRAINTS = (
     RoomChangeGapPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
     ClassSubjectDailyRepeatPreferenceConstraint(),
+    ClassSubjectScheduleBalancePreferenceConstraint(),
     ClassSubjectDoubleThenNextDayPreferenceConstraint(),
     ClassSingleLessonDayPreferenceConstraint(),
     ClassSubjectConsecutiveRepeatPreferenceConstraint(),
@@ -381,6 +482,7 @@ SoftConstraint = (
     RoomChangeGapPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
     | ClassSubjectDailyRepeatPreferenceConstraint
+    | ClassSubjectScheduleBalancePreferenceConstraint
     | ClassSubjectDoubleThenNextDayPreferenceConstraint
     | ClassSingleLessonDayPreferenceConstraint
     | ClassSubjectConsecutiveRepeatPreferenceConstraint
