@@ -23,7 +23,7 @@ from school_timetable_solver.model.solver_models import (
 class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
-    _LOWER_PRIORITY_RESERVE_RATIO = 0.15
+    _LOWER_PRIORITY_TOTAL_RESERVE_RATIO = 0.75
 
     def __init__(
         self,
@@ -87,6 +87,7 @@ class TimetableSolverService:
             calendar_dates=tuple(
                 sorted(day.target_date for day in input_data.calendar_days if day.output_enabled)
             ),
+            lesson_count_rules=resolved_rules.lesson_count_rules,
         )
         for constraint in self._hard_constraints:
             constraint.apply(context)
@@ -111,6 +112,7 @@ class TimetableSolverService:
             total_wall_time = solver.wall_time
         else:
             remaining_seconds = request.max_solve_seconds
+            lower_priority_reserve_ratio = self._lower_priority_reserve_ratio(len(priorities))
             for priority_index, priority in enumerate(priorities):
                 for constraint in soft_constraints_by_priority[priority]:
                     constraint.apply(context)
@@ -132,7 +134,7 @@ class TimetableSolverService:
                 else:
                     requested_reserve = (
                         request.max_solve_seconds
-                        * self._LOWER_PRIORITY_RESERVE_RATIO
+                        * lower_priority_reserve_ratio
                         * remaining_priority_count
                     )
                     equitable_reserve = (
@@ -217,6 +219,11 @@ class TimetableSolverService:
                 constraint_rule_ids=tuple(context.applied_rule_ids),
             ),
         )
+
+    def _lower_priority_reserve_ratio(self, priority_count: int) -> float:
+        if priority_count <= 1:
+            return 0.0
+        return self._LOWER_PRIORITY_TOTAL_RESERVE_RATIO / (priority_count - 1)
 
     def _new_solver(
         self,

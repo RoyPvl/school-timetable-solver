@@ -64,6 +64,46 @@ def test_writer_generates_contractual_matrix_layout_and_borders(
     assert workbook.__dict__.get("_external_links") == []
 
 
+def test_writer_outputs_empty_subject_and_teacher_names_as_blank_cells(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        classes=(
+            replace(minimal_input_data.classes[0], class_name="まな"),
+            *minimal_input_data.classes[1:],
+        ),
+        subjects=(
+            replace(minimal_input_data.subjects[0], subject_name=""),
+            *minimal_input_data.subjects[1:],
+        ),
+        teachers=(
+            replace(minimal_input_data.teachers[0], teacher_name=""),
+            *minimal_input_data.teachers[1:],
+        ),
+    )
+    lesson = ScheduledLessonModel(
+        "Q1",
+        input_data.calendar_days[0].target_date,
+        "P1",
+        "T1",
+        "R1",
+        "C1",
+        "CL1",
+        "S1",
+    )
+    document = BuildTimetableDocumentService().execute(input_data, (lesson,))
+    output = tmp_path / "blank-display-names.xlsx"
+
+    ExcelTimetableWriterAdapter().write(document, output)
+
+    worksheet = load_workbook(output, data_only=True)["全体"]
+    assert worksheet["C4"].value == "まな"
+    assert worksheet["C5"].value is None
+    assert worksheet["C6"].value is None
+
+
 def test_writer_places_dates_left_right_then_down_and_leaves_odd_slot_blank(
     minimal_input_data: InputDataModel,
     tmp_path: Path,

@@ -13,6 +13,7 @@ from school_timetable_solver.constraint.soft_constraints import (
     ClassSubjectConsecutiveRepeatPreferenceConstraint,
     ClassSubjectDailyRepeatPreferenceConstraint,
     ClassSubjectDoubleThenNextDayPreferenceConstraint,
+    ClassSubjectScheduleBalancePreferenceConstraint,
     RoomChangeGapPreferenceConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
@@ -278,16 +279,125 @@ def test_s15_penalizes_only_the_calendar_day_after_a_double_lesson() -> None:
     assert single_then_next_day.objective_value == 0
 
 
+def _solve_s16(
+    daily_period_counts: tuple[int, ...],
+    selected_slots: set[tuple[int, str]],
+    required_count: int,
+) -> tuple[cp_model.CpSolver, SolverContext]:
+    dates = tuple(
+        TARGET_DATE + timedelta(days=day_offset) for day_offset in range(len(daily_period_counts))
+    )
+    candidates = tuple(
+        CandidateSlotModel(
+            f"Q1__{day_offset}__P{period_index}",
+            "Q1",
+            dates[day_offset],
+            f"P{period_index}",
+            "T1",
+            "C1",
+            "CL1",
+            "S1",
+        )
+        for day_offset, period_count in enumerate(daily_period_counts)
+        for period_index in range(1, period_count + 1)
+    )
+    model = cp_model.CpModel()
+    variables = {
+        candidate.candidate_id: model.new_bool_var(candidate.candidate_id)
+        for candidate in candidates
+    }
+    context = SolverContext(
+        model=model,
+        candidates=candidates,
+        assignment_variables=variables,
+        required_counts={"Q1": required_count},
+        room_capacities={"C1": 1},
+        class_daily_limits={
+            ("CL1", target_date): daily_period_counts[day_offset]
+            for day_offset, target_date in enumerate(dates)
+        },
+        requirement_daily_limits={"Q1": None},
+        teacher_daily_limits={("T1", target_date): 6 for target_date in dates},
+        teacher_consecutive_limits={("T1", target_date): 6 for target_date in dates},
+        class_attendance_limits={("CL1", target_date): 6 for target_date in dates},
+        period_orders={
+            f"P{period_index}": period_index
+            for period_index in range(1, max(daily_period_counts) + 1)
+        },
+        calendar_dates=dates,
+    )
+    constraint = ClassSubjectScheduleBalancePreferenceConstraint()
+    constraint.apply(context)
+    for candidate in candidates:
+        day_offset = (candidate.target_date - TARGET_DATE).days
+        context.model.add(
+            variables[candidate.candidate_id]
+            == ((day_offset, candidate.period_id) in selected_slots)
+        )
+    context.model.add(sum(variables.values()) == required_count)
+    terms = context.penalty_terms_by_priority.get(constraint.priority, [])
+    context.model.minimize(sum(terms))
+    solver = cp_model.CpSolver()
+    status = solver.status_name(solver.solve(context.model))
+    assert status == "OPTIMAL"
+    return solver, context
+
+
+def test_s16_prefers_proportional_distribution_over_date_clustering() -> None:
+    balanced, context = _solve_s16(
+        (1, 1, 1, 1),
+        {(0, "P1"), (2, "P1")},
+        required_count=2,
+    )
+    clustered, _ = _solve_s16(
+        (1, 1, 1, 1),
+        {(0, "P1"), (1, "P1")},
+        required_count=2,
+    )
+
+    assert balanced.objective_value == 0
+    assert clustered.objective_value > balanced.objective_value
+    assert ("CL1", "S1") in context.penalty_term_groups_by_priority[
+        ClassSubjectScheduleBalancePreferenceConstraint.priority
+    ]
+
+
+def test_s16_weights_targets_by_candidate_capacity() -> None:
+    solver, _ = _solve_s16(
+        (3, 1, 1),
+        {(0, "P1"), (1, "P1")},
+        required_count=2,
+    )
+
+    assert solver.objective_value == 0
+
+
+def test_s16_skips_requirements_without_distribution_freedom() -> None:
+    solver, context = _solve_s16(
+        (1, 1),
+        {(0, "P1"), (1, "P1")},
+        required_count=2,
+    )
+
+    assert solver.objective_value == 0
+    assert (
+        ClassSubjectScheduleBalancePreferenceConstraint.priority
+        not in context.penalty_terms_by_priority
+    )
+
+
 def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> None:
     assert (
         ClassSubjectDailyRepeatPreferenceConstraint.priority
         > ClassSubjectDoubleThenNextDayPreferenceConstraint.priority
         > ClassDailyContiguityPreferenceConstraint.priority
         > ClassSingleLessonDayPreferenceConstraint.priority
+        > ClassSubjectScheduleBalancePreferenceConstraint.priority
         > ClassSubjectConsecutiveRepeatPreferenceConstraint.priority
         > RoomChangeGapPreferenceConstraint.priority
     )
     assert ClassSubjectDailyRepeatPreferenceConstraint.optimization_scope == "assignment"
+    assert ClassSubjectScheduleBalancePreferenceConstraint.optimization_scope == "assignment"
     assert ClassSubjectDoubleThenNextDayPreferenceConstraint.optimization_scope == "assignment"
     assert ClassDailyContiguityPreferenceConstraint.optimization_scope == "assignment"
     assert ClassSingleLessonDayPreferenceConstraint.optimization_scope == "assignment"

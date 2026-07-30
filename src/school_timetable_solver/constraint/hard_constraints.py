@@ -25,6 +25,38 @@ class RequiredLessonCountConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class LessonCountInScopeConstraint:
+    """H17: require the exact lesson count in every configured slot scope."""
+
+    rule_id = "H17"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_requirement_and_slot: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_requirement_and_slot[
+                (
+                    candidate.requirement_id,
+                    candidate.target_date,
+                    candidate.period_id,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+        for rule in context.lesson_count_rules:
+            if rule.exact_periods == 0:
+                continue
+            variables = [
+                variable
+                for target_date, period_id in rule.target_slots
+                for variable in variables_by_requirement_and_slot[
+                    (rule.requirement_id, target_date, period_id)
+                ]
+            ]
+            context.model.add(sum(variables) == rule.exact_periods)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class TeacherOverlapConstraint:
     """H01: prohibit simultaneous lessons for one teacher."""
 
@@ -362,6 +394,7 @@ class TeacherSingleCampusPerDayConstraint:
 
 DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
+    LessonCountInScopeConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
     CampusRoomCapacityConstraint(),
@@ -376,6 +409,7 @@ DEFAULT_HARD_CONSTRAINTS = (
 
 HardConstraint = (
     RequiredLessonCountConstraint
+    | LessonCountInScopeConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
     | CampusRoomCapacityConstraint

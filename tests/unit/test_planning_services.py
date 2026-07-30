@@ -5,6 +5,7 @@ from datetime import date
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
+    LessonCountRuleSegmentModel,
     PlacementRuleModel,
     TeacherLeaveModel,
 )
@@ -167,3 +168,90 @@ def test_rule_resolver_in_operator_uses_slash_values(
     )
 
     assert target.allowed_period_ids == ("P1", "P2")
+
+
+def test_rule_resolver_unions_segments_and_keeps_overlapping_rules_as_and_conditions(
+    minimal_input_data: InputDataModel,
+) -> None:
+    segments = (
+        LessonCountRuleSegmentModel(
+            "LC_A",
+            "LC_A_1",
+            "複数日",
+            True,
+            "CL1",
+            "S1",
+            1,
+            date(2026, 7, 27),
+            date(2026, 7, 27),
+            ("P1", "P2"),
+        ),
+        LessonCountRuleSegmentModel(
+            "LC_A",
+            "LC_A_2",
+            "複数日",
+            True,
+            "CL1",
+            "S1",
+            1,
+            date(2026, 7, 28),
+            date(2026, 7, 28),
+            ("ALL",),
+        ),
+        LessonCountRuleSegmentModel(
+            "LC_B",
+            "LC_B_1",
+            "重複範囲",
+            True,
+            "CL1",
+            "S1",
+            1,
+            date(2026, 7, 27),
+            date(2026, 7, 27),
+            ("P2", "P3"),
+        ),
+    )
+    input_data = replace(minimal_input_data, lesson_count_rule_segments=segments)
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert len(resolved.lesson_count_rules) == 2
+    rule_a, rule_b = resolved.lesson_count_rules
+    assert rule_a.rule_id == "LC_A"
+    assert (date(2026, 7, 27), "P2") in rule_a.target_slots
+    assert (date(2026, 7, 28), "P3") in rule_a.target_slots
+    assert rule_b.rule_id == "LC_B"
+    assert set(rule_a.target_slots).intersection(rule_b.target_slots) == {(date(2026, 7, 27), "P2")}
+
+
+def test_candidate_builder_excludes_h17_zero_count_slots(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "LC_ZERO",
+                "LC_ZERO_1",
+                "配置禁止",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P1", "P2"),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+
+    result = CandidateBuilderService().execute(input_data, resolved)
+
+    day_one_q1 = {
+        candidate.period_id
+        for candidate in result.candidates
+        if candidate.requirement_id == "Q1" and candidate.target_date == date(2026, 7, 27)
+    }
+    assert day_one_q1 == {"P3"}
+    assert any(summary.rule_id == "H17" for summary in result.rejection_summaries)

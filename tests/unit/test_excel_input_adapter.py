@@ -10,15 +10,16 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_3_with_empty_teacher_leave_sheet() -> None:
+def test_reader_accepts_contract_v0_4_with_empty_optional_rows() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.3"
+    assert result.input_data.settings.schema_version == "0.4"
     assert len(result.input_data.periods) == 6
     assert result.input_data.teachers[0].home_campus_id == "C1"
     assert not result.input_data.teacher_leaves
+    assert not result.input_data.lesson_count_rule_segments
 
 
 def test_reader_normalizes_full_day_and_partial_teacher_leaves(
@@ -44,6 +45,68 @@ def test_reader_normalizes_full_day_and_partial_teacher_leaves(
         "P6",
     )
     assert teacher_leaves[1].unavailable_period_ids == ("P4", "P6")
+
+
+def test_reader_normalizes_whitespace_only_teacher_name_to_empty_string(
+    tmp_path: Path,
+) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["06_教師"].append(
+        ("T_BLANK", "   ", "C1", True, "空き教師"),
+    )
+    target = tmp_path / "blank-teacher-name.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    teacher = next(item for item in result.input_data.teachers if item.teacher_id == "T_BLANK")
+    assert teacher.teacher_name == ""
+
+
+def test_reader_normalizes_empty_subject_name_to_empty_string(
+    tmp_path: Path,
+) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["08_教科"].append(
+        ("S_BLANK", None, True, "表示名が空白の教科"),
+    )
+    target = tmp_path / "blank-subject-name.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    subject = next(item for item in result.input_data.subjects if item.subject_id == "S_BLANK")
+    assert subject.subject_name == ""
+
+
+def test_reader_reads_lesson_count_rule_segments(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["13_授業配置数ルール"].append(
+        (
+            "LC1",
+            "LC1_SEG1",
+            "対象範囲に1コマ",
+            True,
+            "CL1",
+            "S1",
+            1,
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+            "P1|P3",
+            None,
+        )
+    )
+    target = tmp_path / "lesson-count-rules.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    segment = result.input_data.lesson_count_rule_segments[0]
+    assert segment.rule_id == "LC1"
+    assert segment.target_period_ids == ("P1", "P3")
 
 
 def test_operation_sheet_needs_no_header_and_preference_rows_are_ignored(
@@ -117,7 +180,7 @@ def test_reader_trims_text_skips_empty_rows_and_uses_pipe_and_slash() -> None:
 
 def test_missing_required_sheet_is_format_error(tmp_path: Path) -> None:
     workbook = load_workbook(SAMPLE)
-    del workbook["12_選好設定"]
+    del workbook["13_授業配置数ルール"]
     target = tmp_path / "missing-sheet.xlsx"
     workbook.save(target)
 

@@ -74,6 +74,20 @@ class PlacementRuleModel:
 
 
 @dataclass(frozen=True, slots=True)
+class LessonCountRuleSegmentModel:
+    rule_id: str
+    segment_id: str
+    rule_name: str
+    enabled: bool
+    class_id: str
+    subject_id: str
+    exact_periods: int
+    start_date: date
+    end_date: date
+    target_period_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class InputDataModel:
     settings: InputWorkbookSettingsModel
     calendar_days: tuple[CalendarDayModel, ...]
@@ -86,3 +100,4 @@ class InputDataModel:
     lesson_requirements: tuple[LessonRequirementModel, ...]
     teacher_leaves: tuple[TeacherLeaveModel, ...]
     placement_rules: tuple[PlacementRuleModel, ...]
+    lesson_count_rule_segments: tuple[LessonCountRuleSegmentModel, ...] = ()

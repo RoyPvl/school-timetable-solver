@@ -214,6 +214,7 @@ class GenerateTimetableService:
             input_data,
             resolved_rules,
             lessons,
+            candidates,
         )
         issues.extend(validation_report.issues)
         if self._has_errors(issues):

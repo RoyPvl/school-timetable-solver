@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from school_timetable_solver.model.input_models import InputDataModel, TeacherLeaveModel
+from school_timetable_solver.model.input_models import (
+    InputDataModel,
+    LessonCountRuleSegmentModel,
+    TeacherLeaveModel,
+)
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
@@ -179,3 +183,73 @@ def test_capacity_validator_uses_resolved_candidates(
     assert any(
         issue.rule_id == "CANDIDATE_SUPPLY_SHORTAGE" and issue.target == "Q1" for issue in issues
     )
+
+
+def test_validator_detects_lesson_count_rule_group_and_reference_errors(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "LC1",
+                "SEG1",
+                "対象",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("ALL", "P1"),
+            ),
+            LessonCountRuleSegmentModel(
+                "LC1",
+                "SEG2",
+                "対象",
+                True,
+                "UNKNOWN",
+                "S1",
+                1,
+                date(2026, 7, 28),
+                date(2026, 7, 28),
+                ("P1",),
+            ),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {
+        "INVALID_LESSON_COUNT_RULE_PERIODS",
+        "UNKNOWN_REFERENCE",
+        "LESSON_COUNT_RULE_GROUP_MISMATCH",
+    } <= rule_ids
+
+
+def test_capacity_validator_detects_h17_scope_supply_shortage(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "LC1",
+                "SEG1",
+                "範囲不足",
+                True,
+                "CL1",
+                "S1",
+                2,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P1",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+
+    issues = CapacityFeasibilityValidator().validate(input_data, resolved, candidates)
+
+    assert any(issue.rule_id == "LESSON_COUNT_RULE_SCOPE_SUPPLY_SHORTAGE" for issue in issues)
