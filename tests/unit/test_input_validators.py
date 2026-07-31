@@ -5,6 +5,7 @@ from datetime import date
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
     TeacherLeaveModel,
 )
@@ -127,6 +128,7 @@ def test_validator_detects_invalid_period_range_and_rule_columns(
         condition_values=("x",),
         allowed_period_ids=("P1",),
         attendance_streak_limit=0,
+        preferred_attendance_streak_limit=0,
     )
     invalid = replace(
         minimal_input_data,
@@ -253,3 +255,70 @@ def test_capacity_validator_detects_h17_scope_supply_shortage(
     issues = CapacityFeasibilityValidator().validate(input_data, resolved, candidates)
 
     assert any(issue.rule_id == "LESSON_COUNT_RULE_SCOPE_SUPPLY_SHORTAGE" for issue in issues)
+
+
+def test_validator_detects_lesson_count_preference_group_and_range_errors(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG1",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                -1,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("ALL", "P3"),
+            ),
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG2",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                3,
+                date(2026, 7, 28),
+                date(2026, 7, 28),
+                ("P3",),
+            ),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {
+        "INVALID_LESSON_COUNT_PREFERENCE_PERIODS",
+        "LESSON_COUNT_PREFERENCE_GROUP_MISMATCH",
+    } <= rule_ids
+
+
+def test_validator_rejects_preference_above_required_periods(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP_TOO_HIGH",
+                "LP_TOO_HIGH_SEG1",
+                "希望過大",
+                True,
+                "CL1",
+                "S1",
+                3,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P3",),
+            ),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert "LESSON_COUNT_PREFERENCE_EXCEEDS_REQUIRED" in rule_ids

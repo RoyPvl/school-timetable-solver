@@ -12,6 +12,7 @@ class EffectiveClassDateRuleModel:
     daily_hard_limit: int | None
     attendance_streak_limit: int | None
     applied_rule_ids: tuple[str, ...]
+    preferred_attendance_streak_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,11 +42,22 @@ class ResolvedLessonCountRuleModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedLessonCountPreferenceRuleModel:
+    rule_id: str
+    requirement_id: str
+    class_id: str
+    subject_id: str
+    preferred_periods: int
+    target_slots: tuple[tuple[date, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedRuleSetModel:
     class_date_rules: tuple[EffectiveClassDateRuleModel, ...]
     teacher_date_rules: tuple[EffectiveTeacherDateRuleModel, ...]
     issues: tuple[RuleResolutionIssueModel, ...] = ()
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
+    lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

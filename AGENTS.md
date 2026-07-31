@@ -2,14 +2,14 @@
 
 ## Read before implementation
 
-1. `docs/入力契約設計書_v0.4_school-timetable-solver.md`
+1. `docs/入力契約設計書_v0.6_school-timetable-solver.md`
 2. `docs/出力契約設計書_v0.2_school-timetable-solver.md`
 3. `docs/要件定義書_v0.1_school-timetable-solver.md`
 4. `docs/アーキテクチャ設計書_v0.2_school-timetable-solver.md`
 5. `docs/基本設計書_v0.1_school-timetable-solver.md`
 6. `docs/コーディング規約_v0.1_school-timetable-solver.md`
 
-Priority is the active implementation instruction, input contract v0.4, output contract v0.2, architecture v0.2, requirements, basic design, coding standards, then general Python practice. Architecture v0.2's medium-grained file layout overrides the older one-class-per-file rule.
+Priority is the active implementation instruction, input contract v0.6, output contract v0.2, architecture v0.2, requirements, basic design, coding standards, then general Python practice. Architecture v0.2's medium-grained file layout overrides the older one-class-per-file rule.
 
 ## Placement and public methods
 

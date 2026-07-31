@@ -71,6 +71,7 @@ class PlacementRuleModel:
     consecutive_limit: int | None
     attendance_streak_limit: int | None
     priority: int
+    preferred_attendance_streak_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,20 @@ class LessonCountRuleSegmentModel:
     class_id: str
     subject_id: str
     exact_periods: int
+    start_date: date
+    end_date: date
+    target_period_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LessonCountPreferenceRuleSegmentModel:
+    rule_id: str
+    segment_id: str
+    rule_name: str
+    enabled: bool
+    class_id: str
+    subject_id: str
+    preferred_periods: int
     start_date: date
     end_date: date
     target_period_ids: tuple[str, ...]
@@ -101,3 +116,7 @@ class InputDataModel:
     teacher_leaves: tuple[TeacherLeaveModel, ...]
     placement_rules: tuple[PlacementRuleModel, ...]
     lesson_count_rule_segments: tuple[LessonCountRuleSegmentModel, ...] = ()
+    lesson_count_preference_rule_segments: tuple[
+        LessonCountPreferenceRuleSegmentModel,
+        ...,
+    ] = ()

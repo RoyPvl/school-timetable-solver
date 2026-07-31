@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
     TeacherLeaveModel,
 )
@@ -241,6 +242,41 @@ def test_result_validator_reports_lesson_count_in_scope(
     assert "H17" in {issue.rule_id for issue in report.issues}
 
 
+def test_result_validator_warns_for_lesson_count_preference_deviation(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG1",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P3",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = (
+        _lesson(requirement_id="Q1", period_id="P1"),
+        _lesson(requirement_id="Q1", period_id="P3"),
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    s17_issues = [issue for issue in report.issues if issue.rule_id == "S17"]
+    assert len(s17_issues) == 1
+    assert s17_issues[0].severity == "WARNING"
+    assert s17_issues[0].target == "LP1"
+    assert "deviation=1" in s17_issues[0].message
+
+
 def test_result_validator_reports_room_move_and_warns_room_change_without_gap(
     minimal_input_data: InputDataModel,
 ) -> None:
@@ -444,6 +480,47 @@ def test_result_validator_recomputes_s16_from_candidate_capacity(
     assert len(clustered_s16) == 1
     assert clustered_s16[0].severity == "WARNING"
     assert "score=" in clustered_s16[0].message
+
+
+def test_result_validator_reports_s18_triangular_attendance_penalty(
+    minimal_input_data: InputDataModel,
+) -> None:
+    dates = tuple(date(2026, 7, 27) + timedelta(days=offset) for offset in range(5))
+    input_data = replace(
+        minimal_input_data,
+        calendar_days=tuple(
+            replace(minimal_input_data.calendar_days[0], target_date=target_date)
+            for target_date in dates
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    class_rules = tuple(
+        replace(
+            resolved.class_date_rules[0],
+            class_id="CL1",
+            target_date=target_date,
+            attendance_streak_limit=None,
+            preferred_attendance_streak_limit=3,
+        )
+        for target_date in dates
+    )
+    resolved = replace(resolved, class_date_rules=class_rules)
+    lessons = tuple(
+        _lesson(
+            requirement_id=f"Q{index}",
+            target_date=target_date,
+            teacher_id=f"T{index}",
+        )
+        for index, target_date in enumerate(dates, start=1)
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+    s18_issues = [issue for issue in report.issues if issue.rule_id == "S18"]
+
+    assert len(s18_issues) == 1
+    assert s18_issues[0].severity == "WARNING"
+    assert "days=5" in s18_issues[0].message
+    assert "penalty=3" in s18_issues[0].message
 
 
 def test_result_validator_rejects_two_consecutive_empty_periods_between_lessons(

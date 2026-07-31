@@ -366,6 +366,73 @@ class ClassSubjectDoubleThenNextDayPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassConsecutiveAttendancePreferenceConstraint:
+    """S18: progressively penalize attendance beyond each class's preferred streak."""
+
+    rule_id = "S18"
+    priority = 18
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_day: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_day[(candidate.class_id, candidate.target_date)].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+
+        class_ids = {
+            class_id
+            for (class_id, _), limit in context.class_attendance_preference_limits.items()
+            if limit is not None
+        }
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(
+            self.priority,
+            {},
+        )
+        for class_id in class_ids:
+            for target_date in context.calendar_dates:
+                key = (class_id, target_date)
+                if key in context.class_day_variables:
+                    continue
+                day_variable = context.model.new_bool_var(
+                    f"class_day__{class_id}__{target_date.isoformat()}"
+                )
+                context.class_day_variables[key] = day_variable
+                variables = variables_by_class_day.get(key, ())
+                if variables:
+                    context.model.add_max_equality(day_variable, variables)
+                else:
+                    context.model.add(day_variable == 0)
+
+            for end_index, end_date in enumerate(context.calendar_dates):
+                preferred_limit = context.class_attendance_preference_limits.get(
+                    (class_id, end_date)
+                )
+                if preferred_limit is None:
+                    continue
+                for streak_length in range(preferred_limit + 1, end_index + 2):
+                    window = context.calendar_dates[end_index - streak_length + 1 : end_index + 1]
+                    if any(right - left != timedelta(days=1) for left, right in pairwise(window)):
+                        continue
+                    threshold_reached = context.model.new_bool_var(
+                        "class_attendance_preference__"
+                        f"{class_id}__{end_date.isoformat()}__{streak_length}"
+                    )
+                    day_variables = [
+                        context.class_day_variables[(class_id, target_date)]
+                        for target_date in window
+                    ]
+                    context.model.add_bool_and(day_variables).only_enforce_if(threshold_reached)
+                    context.model.add_bool_or(
+                        [variable.negated() for variable in day_variables]
+                    ).only_enforce_if(threshold_reached.negated())
+                    context.penalty_terms_by_priority.setdefault(self.priority, []).append(
+                        threshold_reached
+                    )
+                    penalty_groups.setdefault((class_id,), []).append(threshold_reached)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassSingleLessonDayPreferenceConstraint:
     """S12: minimize class days containing exactly one lesson."""
 
@@ -468,14 +535,63 @@ class ClassSubjectConsecutiveRepeatPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class LessonCountInScopePreferenceConstraint:
+    """S17: minimize deviation from configured lesson counts in slot scopes."""
+
+    rule_id = "S17"
+    priority = 11
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_requirement_and_slot: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_requirement_and_slot[
+                (
+                    candidate.requirement_id,
+                    candidate.target_date,
+                    candidate.period_id,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(
+            self.priority,
+            {},
+        )
+        for rule in context.lesson_count_preference_rules:
+            variables = [
+                variable
+                for target_date, period_id in rule.target_slots
+                for variable in variables_by_requirement_and_slot[
+                    (rule.requirement_id, target_date, period_id)
+                ]
+            ]
+            deviation = context.model.new_int_var(
+                0,
+                context.required_counts[rule.requirement_id],
+                f"lesson_count_preference_deviation__{rule.rule_id}",
+            )
+            context.model.add_abs_equality(
+                deviation,
+                sum(variables) - rule.preferred_periods,
+            )
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(deviation)
+            penalty_groups.setdefault((rule.rule_id,), []).append(deviation)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 DEFAULT_SOFT_CONSTRAINTS = (
     RoomChangeGapPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
     ClassSubjectDailyRepeatPreferenceConstraint(),
     ClassSubjectScheduleBalancePreferenceConstraint(),
     ClassSubjectDoubleThenNextDayPreferenceConstraint(),
+    ClassConsecutiveAttendancePreferenceConstraint(),
     ClassSingleLessonDayPreferenceConstraint(),
     ClassSubjectConsecutiveRepeatPreferenceConstraint(),
+    LessonCountInScopePreferenceConstraint(),
 )
 
 SoftConstraint = (
@@ -484,6 +600,8 @@ SoftConstraint = (
     | ClassSubjectDailyRepeatPreferenceConstraint
     | ClassSubjectScheduleBalancePreferenceConstraint
     | ClassSubjectDoubleThenNextDayPreferenceConstraint
+    | ClassConsecutiveAttendancePreferenceConstraint
     | ClassSingleLessonDayPreferenceConstraint
     | ClassSubjectConsecutiveRepeatPreferenceConstraint
+    | LessonCountInScopePreferenceConstraint
 )

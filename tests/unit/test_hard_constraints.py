@@ -10,6 +10,7 @@ from school_timetable_solver.constraint.hard_constraints import (
     ClassLongInternalGapConstraint,
     ClassOverlapConstraint,
     ClassRoomContinuityConstraint,
+    ConsecutiveAttendanceConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
     TeacherOverlapConstraint,
@@ -314,3 +315,43 @@ def test_teacher_overlap_forces_each_slot_only_when_demand_equals_slot_supply() 
         "OPTIMAL",
         "FEASIBLE",
     }
+
+
+def test_h10_rejects_four_consecutive_attendance_days_when_limit_is_three() -> None:
+    dates = tuple(date(2026, 7, 27 + offset) for offset in range(4))
+    candidates = tuple(
+        _candidate(
+            f"Q{offset}__1",
+            f"T{offset}",
+            target_date,
+            "C1",
+            "P1",
+        )
+        for offset, target_date in enumerate(dates, start=1)
+    )
+    context = _context(candidates)
+    context.calendar_dates = dates
+    context.class_attendance_limits = {("CL1", target_date): 3 for target_date in dates}
+    ConsecutiveAttendanceConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h10_allows_exam_class_without_a_hard_attendance_limit() -> None:
+    dates = tuple(date(2026, 7, 27 + offset) for offset in range(4))
+    candidates = tuple(
+        _candidate(
+            f"Q{offset}__1",
+            f"T{offset}",
+            target_date,
+            "C1",
+            "P1",
+        )
+        for offset, target_date in enumerate(dates, start=1)
+    )
+    context = _context(candidates)
+    context.calendar_dates = dates
+    context.class_attendance_limits = {("CL1", target_date): None for target_date in dates}
+    ConsecutiveAttendanceConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "OPTIMAL"

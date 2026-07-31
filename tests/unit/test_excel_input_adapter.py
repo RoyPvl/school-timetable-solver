@@ -10,16 +10,29 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_4_with_empty_optional_rows() -> None:
+def test_reader_accepts_contract_v0_6_with_empty_optional_rows() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.4"
+    assert result.input_data.settings.schema_version == "0.6"
     assert len(result.input_data.periods) == 6
     assert result.input_data.teachers[0].home_campus_id == "C1"
     assert not result.input_data.teacher_leaves
     assert not result.input_data.lesson_count_rule_segments
+    assert not result.input_data.lesson_count_preference_rule_segments
+    exam_rule = next(
+        rule for rule in result.input_data.placement_rules if rule.rule_id == "RULE_ATTENDANCE_EXAM"
+    )
+    non_exam_rule = next(
+        rule
+        for rule in result.input_data.placement_rules
+        if rule.rule_id == "RULE_ATTENDANCE_NON_EXAM"
+    )
+    assert exam_rule.attendance_streak_limit is None
+    assert exam_rule.preferred_attendance_streak_limit == 3
+    assert non_exam_rule.attendance_streak_limit == 3
+    assert non_exam_rule.preferred_attendance_streak_limit == 2
 
 
 def test_reader_normalizes_full_day_and_partial_teacher_leaves(
@@ -109,6 +122,35 @@ def test_reader_reads_lesson_count_rule_segments(tmp_path: Path) -> None:
     assert segment.target_period_ids == ("P1", "P3")
 
 
+def test_reader_reads_lesson_count_preference_rule_segments(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["14_授業配置数選好ルール"].append(
+        (
+            "LP1",
+            "LP1_SEG1",
+            "対象範囲を0コマに近づける",
+            True,
+            "CL1",
+            "S1",
+            0,
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+            "P3",
+            None,
+        )
+    )
+    target = tmp_path / "lesson-count-preference-rules.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    segment = result.input_data.lesson_count_preference_rule_segments[0]
+    assert segment.rule_id == "LP1"
+    assert segment.preferred_periods == 0
+    assert segment.target_period_ids == ("P3",)
+
+
 def test_operation_sheet_needs_no_header_and_preference_rows_are_ignored(
     tmp_path: Path,
 ) -> None:
@@ -180,7 +222,7 @@ def test_reader_trims_text_skips_empty_rows_and_uses_pipe_and_slash() -> None:
 
 def test_missing_required_sheet_is_format_error(tmp_path: Path) -> None:
     workbook = load_workbook(SAMPLE)
-    del workbook["13_授業配置数ルール"]
+    del workbook["14_授業配置数選好ルール"]
     target = tmp_path / "missing-sheet.xlsx"
     workbook.save(target)
 

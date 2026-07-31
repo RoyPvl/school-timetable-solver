@@ -5,6 +5,7 @@ from datetime import date
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
     PlacementRuleModel,
     TeacherLeaveModel,
@@ -78,6 +79,44 @@ def test_rule_resolver_reports_same_priority_conflict_and_missing_values(
     rule_ids = {issue.rule_id for issue in resolved.issues}
 
     assert {"RULE_PRIORITY_CONFLICT", "RULE_REQUIRED_VALUE_MISSING"} <= rule_ids
+
+
+def test_rule_resolver_allows_missing_hard_attendance_limit_and_resolves_preference(
+    minimal_input_data: InputDataModel,
+) -> None:
+    placement_rules = tuple(
+        replace(
+            rule,
+            attendance_streak_limit=None,
+            preferred_attendance_streak_limit=3 if rule.target_entity == "class" else None,
+        )
+        for rule in minimal_input_data.placement_rules
+    )
+    input_data = replace(minimal_input_data, placement_rules=placement_rules)
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert not resolved.issues
+    assert all(rule.attendance_streak_limit is None for rule in resolved.class_date_rules)
+    assert all(rule.preferred_attendance_streak_limit == 3 for rule in resolved.class_date_rules)
+
+
+def test_rule_resolver_rejects_preferred_attendance_limit_above_hard_limit(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid_rule = replace(
+        minimal_input_data.placement_rules[0],
+        attendance_streak_limit=3,
+        preferred_attendance_streak_limit=4,
+    )
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=(invalid_rule, *minimal_input_data.placement_rules[1:]),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert any(issue.rule_id == "RULE_ATTENDANCE_LIMIT_ORDER" for issue in resolved.issues)
 
 
 def test_candidate_builder_uses_output_periods_assigned_teacher_and_same_campus_rooms(
@@ -255,3 +294,78 @@ def test_candidate_builder_excludes_h17_zero_count_slots(
     }
     assert day_one_q1 == {"P3"}
     assert any(summary.rule_id == "H17" for summary in result.rejection_summaries)
+
+
+def test_rule_resolver_unions_lesson_count_preference_segments(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG1",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P3",),
+            ),
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG2",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 28),
+                date(2026, 7, 28),
+                ("P3",),
+            ),
+        ),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert len(resolved.lesson_count_preference_rules) == 1
+    assert resolved.lesson_count_preference_rules[0].target_slots == (
+        (date(2026, 7, 27), "P3"),
+        (date(2026, 7, 28), "P3"),
+    )
+
+
+def test_candidate_builder_does_not_exclude_s17_zero_preference_slots(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP_ZERO",
+                "LP_ZERO_SEG1",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                0,
+                date(2026, 7, 27),
+                date(2026, 7, 27),
+                ("P3",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+
+    result = CandidateBuilderService().execute(input_data, resolved)
+
+    assert any(
+        candidate.requirement_id == "Q1"
+        and candidate.target_date == date(2026, 7, 27)
+        and candidate.period_id == "P3"
+        for candidate in result.candidates
+    )
+    assert not [summary for summary in result.rejection_summaries if summary.rule_id == "S17"]

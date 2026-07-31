@@ -12,6 +12,7 @@ from school_timetable_solver.model.input_models import (
     CalendarDayModel,
     InputDataModel,
     InputWorkbookSettingsModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
     LessonRequirementModel,
     PlacementRuleModel,
@@ -32,7 +33,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.4 workbooks into Excel-independent models."""
+    """Read input-contract v0.6 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -111,6 +112,7 @@ class ExcelInputReaderAdapter:
             "attendance_streak_limit",
             "priority",
             "note",
+            "preferred_attendance_streak_limit",
         ),
         "12_選好設定": ("rule_id", "enabled", "weight", "note"),
         "13_授業配置数ルール": (
@@ -121,6 +123,19 @@ class ExcelInputReaderAdapter:
             "class_id",
             "subject_id",
             "exact_periods",
+            "start_date",
+            "end_date",
+            "target_periods",
+            "note",
+        ),
+        "14_授業配置数選好ルール": (
+            "rule_id",
+            "segment_id",
+            "rule_name",
+            "enabled",
+            "class_id",
+            "subject_id",
+            "preferred_periods",
             "start_date",
             "end_date",
             "target_periods",
@@ -190,6 +205,10 @@ class ExcelInputReaderAdapter:
             rows_by_sheet["13_授業配置数ルール"],
             issues,
         )
+        lesson_count_preference_rule_segments = self._read_lesson_count_preference_rule_segments(
+            rows_by_sheet["14_授業配置数選好ルール"],
+            issues,
+        )
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
         return InputReadResultModel(
@@ -206,6 +225,7 @@ class ExcelInputReaderAdapter:
                 teacher_leaves=tuple(teacher_leaves),
                 placement_rules=tuple(placement_rules),
                 lesson_count_rule_segments=tuple(lesson_count_rule_segments),
+                lesson_count_preference_rule_segments=tuple(lesson_count_preference_rule_segments),
             ),
             tuple(issues),
         )
@@ -304,7 +324,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.4":
+        if schema_version is not None and schema_version != "0.6":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -462,6 +482,81 @@ class ExcelInputReaderAdapter:
                     class_id=class_id,
                     subject_id=subject_id,
                     exact_periods=exact_periods,
+                    start_date=start_date,
+                    end_date=end_date,
+                    target_period_ids=tuple(
+                        part.strip() for part in target_periods.split("|") if part.strip()
+                    ),
+                )
+            )
+        return result
+
+    def _read_lesson_count_preference_rule_segments(
+        self,
+        rows: list[tuple[int, dict[str, object]]],
+        issues: list[ValidationIssueModel],
+    ) -> list[LessonCountPreferenceRuleSegmentModel]:
+        sheet_name = "14_授業配置数選好ルール"
+        result: list[LessonCountPreferenceRuleSegmentModel] = []
+        for row_number, row in rows:
+            target_periods = self._text(
+                row["target_periods"],
+                sheet_name,
+                row_number,
+                "target_periods",
+                issues,
+            )
+            required = (
+                self._text(row["rule_id"], sheet_name, row_number, "rule_id", issues),
+                self._text(row["segment_id"], sheet_name, row_number, "segment_id", issues),
+                self._text(row["rule_name"], sheet_name, row_number, "rule_name", issues),
+                self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
+                self._text(row["class_id"], sheet_name, row_number, "class_id", issues),
+                self._text(row["subject_id"], sheet_name, row_number, "subject_id", issues),
+                self._integer(
+                    row["preferred_periods"],
+                    sheet_name,
+                    row_number,
+                    "preferred_periods",
+                    issues,
+                ),
+                self._date(row["start_date"], sheet_name, row_number, "start_date", issues),
+                self._date(row["end_date"], sheet_name, row_number, "end_date", issues),
+                target_periods,
+            )
+            if None in required:
+                continue
+            (
+                rule_id,
+                segment_id,
+                rule_name,
+                enabled,
+                class_id,
+                subject_id,
+                preferred_periods,
+                start_date,
+                end_date,
+                target_periods,
+            ) = required
+            assert isinstance(rule_id, str)
+            assert isinstance(segment_id, str)
+            assert isinstance(rule_name, str)
+            assert isinstance(enabled, bool)
+            assert isinstance(class_id, str)
+            assert isinstance(subject_id, str)
+            assert isinstance(preferred_periods, int)
+            assert isinstance(start_date, date)
+            assert isinstance(end_date, date)
+            assert isinstance(target_periods, str)
+            result.append(
+                LessonCountPreferenceRuleSegmentModel(
+                    rule_id=rule_id,
+                    segment_id=segment_id,
+                    rule_name=rule_name,
+                    enabled=enabled,
+                    class_id=class_id,
+                    subject_id=subject_id,
+                    preferred_periods=preferred_periods,
                     start_date=start_date,
                     end_date=end_date,
                     target_period_ids=tuple(
@@ -904,6 +999,13 @@ class ExcelInputReaderAdapter:
                         issues,
                     ),
                     priority=priority,
+                    preferred_attendance_streak_limit=self._optional_integer(
+                        row["preferred_attendance_streak_limit"],
+                        "11_配置ルール",
+                        row_number,
+                        "preferred_attendance_streak_limit",
+                        issues,
+                    ),
                 )
             )
         return result

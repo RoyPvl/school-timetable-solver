@@ -4,7 +4,11 @@ from collections import Counter, defaultdict
 from collections.abc import Container, Iterable
 from datetime import date, timedelta
 
-from school_timetable_solver.model.input_models import InputDataModel, LessonCountRuleSegmentModel
+from school_timetable_solver.model.input_models import (
+    InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
+    LessonCountRuleSegmentModel,
+)
 from school_timetable_solver.model.result_models import ValidationIssueModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
@@ -22,6 +26,7 @@ class ReferenceIntegrityValidator:
         self._validate_references(input_data, issues)
         self._validate_rules(input_data, issues)
         self._validate_lesson_count_rules(input_data, issues)
+        self._validate_lesson_count_preference_rules(input_data, issues)
         return issues
 
     def _validate_uniqueness(
@@ -44,6 +49,10 @@ class ReferenceIntegrityValidator:
             (
                 "lesson_count_segment_id",
                 (item.segment_id for item in input_data.lesson_count_rule_segments),
+            ),
+            (
+                "lesson_count_preference_segment_id",
+                (item.segment_id for item in input_data.lesson_count_preference_rule_segments),
             ),
         )
         for label, identifiers in id_groups:
@@ -198,6 +207,15 @@ class ReferenceIntegrityValidator:
                         "INVALID_LESSON_COUNT_RULE_EXACT_PERIODS",
                         segment.segment_id,
                         "exact_periodsは0以上が必要です",
+                    )
+                )
+        for segment in input_data.lesson_count_preference_rule_segments:
+            if segment.preferred_periods < 0:
+                issues.append(
+                    self._issue(
+                        "INVALID_LESSON_COUNT_PREFERENCE_PERIODS",
+                        segment.segment_id,
+                        "preferred_periodsは0以上が必要です",
                     )
                 )
 
@@ -450,13 +468,18 @@ class ReferenceIntegrityValidator:
             for period_id in rule.allowed_period_ids:
                 self._require_reference(issues, target, "allowed_period", period_id, period_ids)
             if rule.target_entity == "teacher" and (
-                rule.allowed_period_ids or rule.attendance_streak_limit is not None
+                rule.allowed_period_ids
+                or rule.attendance_streak_limit is not None
+                or rule.preferred_attendance_streak_limit is not None
             ):
                 issues.append(
                     self._issue(
                         "INVALID_RULE_COLUMN_FOR_TARGET",
                         target,
-                        "teacherではallowed_periods/attendance_streak_limitを使用できません",
+                        (
+                            "teacherではallowed_periods/attendance_streak_limit/"
+                            "preferred_attendance_streak_limitを使用できません"
+                        ),
                     )
                 )
             if rule.target_entity == "class" and rule.consecutive_limit is not None:
@@ -471,6 +494,10 @@ class ReferenceIntegrityValidator:
                 ("daily_hard_limit", rule.daily_hard_limit),
                 ("consecutive_limit", rule.consecutive_limit),
                 ("attendance_streak_limit", rule.attendance_streak_limit),
+                (
+                    "preferred_attendance_streak_limit",
+                    rule.preferred_attendance_streak_limit,
+                ),
             ):
                 if value is not None and value < 1:
                     issues.append(
@@ -481,6 +508,7 @@ class ReferenceIntegrityValidator:
                 or rule.daily_hard_limit is not None
                 or rule.consecutive_limit is not None
                 or rule.attendance_streak_limit is not None
+                or rule.preferred_attendance_streak_limit is not None
             ):
                 issues.append(
                     self._issue(
@@ -551,7 +579,7 @@ class ReferenceIntegrityValidator:
                         self._issue(
                             "UNKNOWN_LESSON_COUNT_RULE_DATE",
                             segment.segment_id,
-                            (f"日付範囲に開講カレンダー未登録日があります: {missing_dates[0]}"),
+                            f"日付範囲に開講カレンダー未登録日があります: {missing_dates[0]}",
                         )
                     )
             if not segment.target_period_ids:
@@ -631,6 +659,168 @@ class ReferenceIntegrityValidator:
                             ),
                         )
                     )
+
+    def _validate_lesson_count_preference_rules(
+        self,
+        input_data: InputDataModel,
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        classes = {item.class_id: item for item in input_data.classes}
+        subjects = {item.subject_id: item for item in input_data.subjects}
+        period_ids = {item.period_id for item in input_data.periods}
+        calendar_dates = {item.target_date for item in input_data.calendar_days}
+        active_requirements = {
+            (item.class_id, item.subject_id): item
+            for item in input_data.lesson_requirements
+            if item.enabled
+        }
+        active_requirement_counts = Counter(
+            (item.class_id, item.subject_id)
+            for item in input_data.lesson_requirements
+            if item.enabled
+        )
+        segments_by_rule: dict[str, list[LessonCountPreferenceRuleSegmentModel]] = defaultdict(list)
+        for segment in input_data.lesson_count_preference_rule_segments:
+            segments_by_rule[segment.rule_id].append(segment)
+            self._require_reference(
+                issues,
+                segment.segment_id,
+                "class_id",
+                segment.class_id,
+                classes,
+            )
+            self._require_reference(
+                issues,
+                segment.segment_id,
+                "subject_id",
+                segment.subject_id,
+                subjects,
+            )
+            if segment.enabled:
+                referenced = (classes.get(segment.class_id), subjects.get(segment.subject_id))
+                if any(item is not None and not item.enabled for item in referenced):
+                    issues.append(
+                        self._issue(
+                            "DISABLED_MASTER_REFERENCE",
+                            segment.segment_id,
+                            "有効な授業配置数選好ルールが無効マスタを参照しています",
+                        )
+                    )
+            if segment.start_date > segment.end_date:
+                issues.append(
+                    self._issue(
+                        "INVALID_LESSON_COUNT_PREFERENCE_DATE_RANGE",
+                        segment.segment_id,
+                        "start_dateはend_date以前である必要があります",
+                    )
+                )
+            else:
+                date_count = (segment.end_date - segment.start_date).days + 1
+                missing_dates = [
+                    segment.start_date + timedelta(days=offset)
+                    for offset in range(date_count)
+                    if segment.start_date + timedelta(days=offset) not in calendar_dates
+                ]
+                if missing_dates:
+                    issues.append(
+                        self._issue(
+                            "UNKNOWN_LESSON_COUNT_PREFERENCE_DATE",
+                            segment.segment_id,
+                            f"日付範囲に開講カレンダー未登録日があります: {missing_dates[0]}",
+                        )
+                    )
+            if not segment.target_period_ids:
+                issues.append(
+                    self._issue(
+                        "LESSON_COUNT_PREFERENCE_PERIOD_REQUIRED",
+                        segment.segment_id,
+                        "target_periodsにはALLまたは時限IDが必要です",
+                    )
+                )
+            elif "ALL" in segment.target_period_ids:
+                if segment.target_period_ids != ("ALL",):
+                    issues.append(
+                        self._issue(
+                            "INVALID_LESSON_COUNT_PREFERENCE_PERIODS",
+                            segment.segment_id,
+                            "ALLは個別の時限IDと併記できません",
+                        )
+                    )
+            else:
+                unknown_period_ids = set(segment.target_period_ids) - period_ids
+                if unknown_period_ids:
+                    issues.append(
+                        self._issue(
+                            "UNKNOWN_LESSON_COUNT_PREFERENCE_PERIOD",
+                            segment.segment_id,
+                            f"存在しない時限IDがあります: {sorted(unknown_period_ids)}",
+                        )
+                    )
+                duplicate_period_ids = {
+                    period_id
+                    for period_id, count in Counter(segment.target_period_ids).items()
+                    if count > 1
+                }
+                if duplicate_period_ids:
+                    issues.append(
+                        self._issue(
+                            "DUPLICATE_LESSON_COUNT_PREFERENCE_PERIOD",
+                            segment.segment_id,
+                            f"target_periodsに重複があります: {sorted(duplicate_period_ids)}",
+                        )
+                    )
+
+        for rule_id, segments in segments_by_rule.items():
+            signatures = {
+                (
+                    segment.rule_name,
+                    segment.enabled,
+                    segment.class_id,
+                    segment.subject_id,
+                    segment.preferred_periods,
+                )
+                for segment in segments
+            }
+            if len(signatures) > 1:
+                issues.append(
+                    self._issue(
+                        "LESSON_COUNT_PREFERENCE_GROUP_MISMATCH",
+                        rule_id,
+                        (
+                            "同一rule_idのrule_name/enabled/class_id/subject_id/"
+                            "preferred_periodsが一致しません"
+                        ),
+                    )
+                )
+                continue
+            if not segments or not segments[0].enabled:
+                continue
+            target = (segments[0].class_id, segments[0].subject_id)
+            if active_requirement_counts[target] != 1:
+                issues.append(
+                    self._issue(
+                        "LESSON_COUNT_PREFERENCE_REQUIREMENT_REQUIRED",
+                        rule_id,
+                        (
+                            "有効なclass_id/subject_idの授業要求が1件必要です: "
+                            f"class_id={target[0]}, subject_id={target[1]}"
+                        ),
+                    )
+                )
+                continue
+            requirement = active_requirements[target]
+            if segments[0].preferred_periods > requirement.required_periods:
+                issues.append(
+                    self._issue(
+                        "LESSON_COUNT_PREFERENCE_EXCEEDS_REQUIRED",
+                        rule_id,
+                        (
+                            "希望コマ数が授業要求の必要コマ数を超えています: "
+                            f"preferred={segments[0].preferred_periods}, "
+                            f"required={requirement.required_periods}"
+                        ),
+                    )
+                )
 
     def _require_reference(
         self,

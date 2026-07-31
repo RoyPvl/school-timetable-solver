@@ -10,6 +10,7 @@ from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CON
 from school_timetable_solver.model.input_models import (
     GenerationMode,
     InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
 )
 from school_timetable_solver.model.result_models import GenerationRequestModel
@@ -137,13 +138,15 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert sorted(lesson_counts.values()) == [1, 1, 2]
-    assert solver_result.statistics.constraint_rule_ids[-7:] == (
+    assert solver_result.statistics.constraint_rule_ids[-9:] == (
         "S14",
         "S15",
         "S11",
+        "S18",
         "S12",
         "S16",
         "S13",
+        "S17",
         "S10",
     )
 
@@ -195,6 +198,53 @@ def test_h17_places_exact_count_in_resolved_scope(
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert len(scoped_lessons) == 1
     assert "H17" in solver_result.statistics.constraint_rule_ids
+
+
+def test_s17_avoids_preferred_zero_scope_when_other_slots_are_available(
+    minimal_input_data: InputDataModel,
+    tmp_path: Path,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "LP1",
+                "LP1_SEG1",
+                "3限を避ける",
+                True,
+                "CL1",
+                "S1",
+                0,
+                minimal_input_data.calendar_days[0].target_date,
+                minimal_input_data.calendar_days[1].target_date,
+                ("P3",),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    request = GenerationRequestModel(
+        tmp_path / "input.xlsx",
+        tmp_path / "output.xlsx",
+        None,
+        GenerationMode.STRICT,
+        10.0,
+        1,
+        1,
+    )
+
+    solver_result = TimetableSolverService(
+        DEFAULT_HARD_CONSTRAINTS,
+        DEFAULT_SOFT_CONSTRAINTS,
+    ).execute(request, input_data, resolved, candidates)
+
+    assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
+    assert not [
+        lesson
+        for lesson in solver_result.lessons
+        if lesson.requirement_id == "Q1" and lesson.period_id == "P3"
+    ]
+    assert "S17" in solver_result.statistics.constraint_rule_ids
 
 
 def test_lower_priority_s13_mixes_subjects_without_worsening_s11_or_s12(

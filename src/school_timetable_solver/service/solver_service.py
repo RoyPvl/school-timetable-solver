@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 
 from ortools.sat.python import cp_model
@@ -19,11 +20,14 @@ from school_timetable_solver.model.solver_models import (
     SolverStatisticsModel,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 
 class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
     _LOWER_PRIORITY_TOTAL_RESERVE_RATIO = 0.75
+    _PRELIMINARY_DEFERRED_HARD_RULE_IDS = frozenset({"H16"})
 
     def __init__(
         self,
@@ -40,6 +44,88 @@ class TimetableSolverService:
         resolved_rules: ResolvedRuleSetModel,
         candidate_result: CandidateBuildResultModel,
     ) -> SolverResultModel:
+        context, variables = self._build_solver_context(
+            input_data,
+            resolved_rules,
+            candidate_result,
+        )
+        soft_constraints_by_priority: dict[int, list[SoftConstraint]] = defaultdict(list)
+        for constraint in self._soft_constraints:
+            soft_constraints_by_priority[constraint.priority].append(constraint)
+
+        priorities = sorted(soft_constraints_by_priority, reverse=True)
+        if priorities:
+            solver, status, total_wall_time = self._solve_soft_priorities(
+                request,
+                context,
+                variables,
+                soft_constraints_by_priority,
+                priorities,
+            )
+        else:
+            for constraint in self._hard_constraints:
+                constraint.apply(context)
+            LOGGER.info(
+                "Solverフェーズ開始 phase=hard_only max_seconds=%f",
+                request.max_solve_seconds,
+            )
+            solver = self._new_solver(request, request.max_solve_seconds)
+            status = solver.status_name(solver.solve(context.model))
+            total_wall_time = solver.wall_time
+            LOGGER.info(
+                "Solverフェーズ終了 phase=hard_only status=%s wall_time=%f",
+                status,
+                solver.wall_time,
+            )
+
+        lessons: list[ScheduledLessonDraftModel] = []
+        if solver is not None and status in {"OPTIMAL", "FEASIBLE"}:
+            for candidate in candidate_result.candidates:
+                if solver.value(variables[candidate.candidate_id]):
+                    lessons.append(
+                        ScheduledLessonDraftModel(
+                            requirement_id=candidate.requirement_id,
+                            target_date=candidate.target_date,
+                            period_id=candidate.period_id,
+                            teacher_id=candidate.teacher_id,
+                            campus_id=candidate.campus_id,
+                            class_id=candidate.class_id,
+                            subject_id=candidate.subject_id,
+                            room_index=solver.value(
+                                context.class_room_variables[
+                                    (
+                                        candidate.campus_id,
+                                        candidate.target_date,
+                                        candidate.class_id,
+                                    )
+                                ]
+                            ),
+                        )
+                    )
+        lessons.sort(
+            key=lambda item: (
+                item.target_date,
+                context.period_orders[item.period_id],
+                item.class_id,
+                item.requirement_id,
+            )
+        )
+        return SolverResultModel(
+            lessons=tuple(lessons),
+            statistics=SolverStatisticsModel(
+                status=status,
+                wall_time_seconds=total_wall_time,
+                variable_count=len(variables),
+                constraint_rule_ids=tuple(context.applied_rule_ids),
+            ),
+        )
+
+    def _build_solver_context(
+        self,
+        input_data: InputDataModel,
+        resolved_rules: ResolvedRuleSetModel,
+        candidate_result: CandidateBuildResultModel,
+    ) -> tuple[SolverContext, dict[str, cp_model.IntVar]]:
         model = cp_model.CpModel()
         variables = {
             candidate.candidate_id: model.new_bool_var(f"x__{candidate.candidate_id}")
@@ -87,137 +173,206 @@ class TimetableSolverService:
             calendar_dates=tuple(
                 sorted(day.target_date for day in input_data.calendar_days if day.output_enabled)
             ),
+            class_attendance_preference_limits={
+                (rule.class_id, rule.target_date): rule.preferred_attendance_streak_limit
+                for rule in resolved_rules.class_date_rules
+            },
             lesson_count_rules=resolved_rules.lesson_count_rules,
+            lesson_count_preference_rules=resolved_rules.lesson_count_preference_rules,
         )
-        for constraint in self._hard_constraints:
-            constraint.apply(context)
-        soft_constraints_by_priority: dict[int, list[SoftConstraint]] = defaultdict(list)
-        for constraint in self._soft_constraints:
-            soft_constraints_by_priority[constraint.priority].append(constraint)
+        return context, variables
 
-        priorities = sorted(soft_constraints_by_priority, reverse=True)
+    def _solve_soft_priorities(
+        self,
+        request: GenerationRequestModel,
+        context: SolverContext,
+        variables: dict[str, cp_model.IntVar],
+        soft_constraints_by_priority: dict[int, list[SoftConstraint]],
+        priorities: list[int],
+    ) -> tuple[cp_model.CpSolver | None, str, float]:
+        deferred_hard_constraints = [
+            (index, constraint)
+            for index, constraint in enumerate(self._hard_constraints)
+            if constraint.rule_id in self._PRELIMINARY_DEFERRED_HARD_RULE_IDS
+        ]
+        for constraint in self._hard_constraints:
+            if constraint.rule_id not in self._PRELIMINARY_DEFERRED_HARD_RULE_IDS:
+                constraint.apply(context)
+
         assignment_priorities = {
             constraint.priority
             for constraint in self._soft_constraints
             if constraint.optimization_scope == "assignment"
         }
         last_assignment_priority = min(assignment_priorities) if assignment_priorities else None
+        lower_priority_reserve_ratio = self._lower_priority_reserve_ratio(len(priorities))
+        first_phase_seconds = self._priority_phase_seconds(
+            request.max_solve_seconds,
+            request.max_solve_seconds,
+            len(priorities) - 1,
+            lower_priority_reserve_ratio,
+        )
+        preliminary_solver: cp_model.CpSolver | None = None
+        preliminary_status = "SKIPPED"
+        preliminary_variable_count = 0
         total_wall_time = 0.0
-        solved_variable_count = 0
+        if deferred_hard_constraints:
+            deferred_rule_ids = ",".join(
+                constraint.rule_id for _, constraint in deferred_hard_constraints
+            )
+            LOGGER.info(
+                (
+                    "Solverフェーズ開始 phase=preliminary_feasibility "
+                    "deferred_rule_ids=%s max_seconds=%f"
+                ),
+                deferred_rule_ids,
+                first_phase_seconds,
+            )
+            preliminary_variable_count = len(context.model.proto.variables)
+            preliminary_solver = self._new_solver(request, first_phase_seconds)
+            preliminary_status = preliminary_solver.status_name(
+                preliminary_solver.solve(context.model)
+            )
+            total_wall_time = preliminary_solver.wall_time
+            LOGGER.info(
+                (
+                    "Solverフェーズ終了 phase=preliminary_feasibility "
+                    "deferred_rule_ids=%s status=%s wall_time=%f"
+                ),
+                deferred_rule_ids,
+                preliminary_status,
+                preliminary_solver.wall_time,
+            )
+
+        for rule_index, constraint in deferred_hard_constraints:
+            constraint.apply(context)
+            applied_rule_id = context.applied_rule_ids.pop()
+            context.applied_rule_ids.insert(rule_index, applied_rule_id)
+        if preliminary_solver is not None and preliminary_status in {"OPTIMAL", "FEASIBLE"}:
+            for variable_index in range(preliminary_variable_count):
+                variable = context.model.get_int_var_from_proto_index(variable_index)
+                context.model.add_hint(variable, preliminary_solver.value(variable))
+
+        initial_feasibility_seconds = max(
+            first_phase_seconds - total_wall_time,
+            0.001,
+        )
+        LOGGER.info(
+            "Solverフェーズ開始 phase=initial_feasibility max_seconds=%f hints=%d",
+            initial_feasibility_seconds,
+            len(context.model.proto.solution_hint.vars),
+        )
+        initial_solver = self._new_solver(request, initial_feasibility_seconds)
+        initial_status = initial_solver.status_name(initial_solver.solve(context.model))
+        total_wall_time += initial_solver.wall_time
+        LOGGER.info(
+            (
+                "Solverフェーズ終了 phase=initial_feasibility "
+                "status=%s wall_time=%f total_wall_time=%f"
+            ),
+            initial_status,
+            initial_solver.wall_time,
+            total_wall_time,
+        )
+
+        hint_solver = initial_solver if initial_status in {"OPTIMAL", "FEASIBLE"} else None
+        solved_variable_count = len(context.model.proto.variables) if hint_solver is not None else 0
         solver: cp_model.CpSolver | None = None
         status = "UNKNOWN"
-        if not priorities:
-            solver = self._new_solver(request, request.max_solve_seconds)
-            status = solver.status_name(solver.solve(model))
-            total_wall_time = solver.wall_time
-        else:
-            remaining_seconds = request.max_solve_seconds
-            lower_priority_reserve_ratio = self._lower_priority_reserve_ratio(len(priorities))
-            for priority_index, priority in enumerate(priorities):
-                for constraint in soft_constraints_by_priority[priority]:
-                    constraint.apply(context)
-                priority_terms = context.penalty_terms_by_priority.get(priority, [])
-                model.minimize(sum(priority_terms))
-                model.clear_hints()
-                if solver is None:
-                    for penalty in priority_terms:
-                        model.add_hint(penalty, 0)
-                else:
-                    for variable_index in range(solved_variable_count):
-                        variable = model.get_int_var_from_proto_index(variable_index)
-                        model.add_hint(variable, solver.value(variable))
-
-                is_last_priority = priority_index == len(priorities) - 1
-                remaining_priority_count = len(priorities) - priority_index - 1
-                if is_last_priority:
-                    phase_seconds = remaining_seconds
-                else:
-                    requested_reserve = (
-                        request.max_solve_seconds
-                        * lower_priority_reserve_ratio
-                        * remaining_priority_count
-                    )
-                    equitable_reserve = (
-                        remaining_seconds
-                        * remaining_priority_count
-                        / (remaining_priority_count + 1)
-                    )
-                    phase_seconds = max(
-                        remaining_seconds - min(requested_reserve, equitable_reserve),
-                        0.001,
-                    )
-                phase_solver = self._new_solver(request, phase_seconds)
-                phase_status = phase_solver.status_name(phase_solver.solve(model))
-                total_wall_time += phase_solver.wall_time
-                remaining_seconds = max(
-                    request.max_solve_seconds - total_wall_time,
-                    0.001,
-                )
-                if phase_status not in {"OPTIMAL", "FEASIBLE"}:
-                    if solver is None:
-                        status = phase_status
-                    break
-
-                solver = phase_solver
-                solved_variable_count = len(model.proto.variables)
-                status = phase_status
-                if not is_last_priority:
-                    achieved_penalty = sum(solver.value(penalty) for penalty in priority_terms)
-                    model.add(sum(priority_terms) <= achieved_penalty)
-                    for group_terms in context.penalty_term_groups_by_priority.get(
-                        priority,
-                        {},
-                    ).values():
-                        achieved_group_penalty = sum(
-                            solver.value(penalty) for penalty in group_terms
-                        )
-                        model.add(sum(group_terms) <= achieved_group_penalty)
-                    if priority == last_assignment_priority:
-                        for variable in variables.values():
-                            model.add(variable == solver.value(variable))
-            if len(priorities) > 1 and status == "OPTIMAL":
-                status = "FEASIBLE"
-
-        lessons: list[ScheduledLessonDraftModel] = []
-        if solver is not None and status in {"OPTIMAL", "FEASIBLE"}:
-            for candidate in candidate_result.candidates:
-                if solver.value(variables[candidate.candidate_id]):
-                    lessons.append(
-                        ScheduledLessonDraftModel(
-                            requirement_id=candidate.requirement_id,
-                            target_date=candidate.target_date,
-                            period_id=candidate.period_id,
-                            teacher_id=candidate.teacher_id,
-                            campus_id=candidate.campus_id,
-                            class_id=candidate.class_id,
-                            subject_id=candidate.subject_id,
-                            room_index=solver.value(
-                                context.class_room_variables[
-                                    (
-                                        candidate.campus_id,
-                                        candidate.target_date,
-                                        candidate.class_id,
-                                    )
-                                ]
-                            ),
-                        )
-                    )
-        lessons.sort(
-            key=lambda item: (
-                item.target_date,
-                context.period_orders[item.period_id],
-                item.class_id,
-                item.requirement_id,
-            )
+        remaining_seconds = max(
+            request.max_solve_seconds - total_wall_time,
+            0.001,
         )
-        return SolverResultModel(
-            lessons=tuple(lessons),
-            statistics=SolverStatisticsModel(
-                status=status,
-                wall_time_seconds=total_wall_time,
-                variable_count=len(variables),
-                constraint_rule_ids=tuple(context.applied_rule_ids),
-            ),
+        for priority_index, priority in enumerate(priorities):
+            priority_constraints = soft_constraints_by_priority[priority]
+            for constraint in priority_constraints:
+                constraint.apply(context)
+            priority_terms = context.penalty_terms_by_priority.get(priority, [])
+            context.model.minimize(sum(priority_terms))
+            context.model.clear_hints()
+            if hint_solver is None:
+                for penalty in priority_terms:
+                    context.model.add_hint(penalty, 0)
+            else:
+                for variable_index in range(solved_variable_count):
+                    variable = context.model.get_int_var_from_proto_index(variable_index)
+                    context.model.add_hint(variable, hint_solver.value(variable))
+
+            is_last_priority = priority_index == len(priorities) - 1
+            remaining_priority_count = len(priorities) - priority_index - 1
+            phase_seconds = self._priority_phase_seconds(
+                request.max_solve_seconds,
+                remaining_seconds,
+                remaining_priority_count,
+                lower_priority_reserve_ratio,
+            )
+            rule_ids = ",".join(constraint.rule_id for constraint in priority_constraints)
+            LOGGER.info(
+                ("Solverフェーズ開始 phase=soft priority=%d rule_ids=%s max_seconds=%f hints=%d"),
+                priority,
+                rule_ids,
+                phase_seconds,
+                len(context.model.proto.solution_hint.vars),
+            )
+            phase_solver = self._new_solver(request, phase_seconds)
+            phase_status = phase_solver.status_name(phase_solver.solve(context.model))
+            total_wall_time += phase_solver.wall_time
+            LOGGER.info(
+                (
+                    "Solverフェーズ終了 phase=soft priority=%d rule_ids=%s "
+                    "status=%s wall_time=%f total_wall_time=%f"
+                ),
+                priority,
+                rule_ids,
+                phase_status,
+                phase_solver.wall_time,
+                total_wall_time,
+            )
+            remaining_seconds = max(
+                request.max_solve_seconds - total_wall_time,
+                0.001,
+            )
+            if phase_status not in {"OPTIMAL", "FEASIBLE"}:
+                if solver is None:
+                    status = phase_status
+                break
+
+            solver = phase_solver
+            hint_solver = phase_solver
+            solved_variable_count = len(context.model.proto.variables)
+            status = phase_status
+            if not is_last_priority:
+                achieved_penalty = sum(solver.value(penalty) for penalty in priority_terms)
+                context.model.add(sum(priority_terms) <= achieved_penalty)
+                for group_terms in context.penalty_term_groups_by_priority.get(
+                    priority,
+                    {},
+                ).values():
+                    achieved_group_penalty = sum(solver.value(penalty) for penalty in group_terms)
+                    context.model.add(sum(group_terms) <= achieved_group_penalty)
+                if priority == last_assignment_priority:
+                    for variable in variables.values():
+                        context.model.add(variable == solver.value(variable))
+        if len(priorities) > 1 and status == "OPTIMAL":
+            status = "FEASIBLE"
+        return solver, status, total_wall_time
+
+    def _priority_phase_seconds(
+        self,
+        total_seconds: float,
+        remaining_seconds: float,
+        remaining_priority_count: int,
+        lower_priority_reserve_ratio: float,
+    ) -> float:
+        if remaining_priority_count == 0:
+            return remaining_seconds
+        requested_reserve = total_seconds * lower_priority_reserve_ratio * remaining_priority_count
+        equitable_reserve = (
+            remaining_seconds * remaining_priority_count / (remaining_priority_count + 1)
+        )
+        return max(
+            remaining_seconds - min(requested_reserve, equitable_reserve),
+            0.001,
         )
 
     def _lower_priority_reserve_ratio(self, priority_count: int) -> float:

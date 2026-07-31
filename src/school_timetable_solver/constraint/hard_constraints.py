@@ -354,11 +354,11 @@ class ConsecutiveAttendanceConstraint:
                     context.model.add_max_equality(day_variable, variables)
                 else:
                     context.model.add(day_variable == 0)
-            for start_index, start_date in enumerate(context.calendar_dates):
-                limit = context.class_attendance_limits[(class_id, start_date)]
+            for end_index, end_date in enumerate(context.calendar_dates):
+                limit = context.class_attendance_limits[(class_id, end_date)]
                 if limit is None:
                     continue
-                window = context.calendar_dates[start_index : start_index + limit + 1]
+                window = context.calendar_dates[max(0, end_index - limit) : end_index + 1]
                 if len(window) != limit + 1:
                     continue
                 if any(right - left != timedelta(days=1) for left, right in pairwise(window)):

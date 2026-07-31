@@ -6,6 +6,7 @@ from datetime import date
 from school_timetable_solver.model.input_models import (
     CalendarDayModel,
     InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
     PlacementRuleModel,
 )
@@ -16,6 +17,7 @@ from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     EffectiveClassDateRuleModel,
     EffectiveTeacherDateRuleModel,
+    ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
     ResolvedRuleSetModel,
     RuleResolutionIssueModel,
@@ -55,6 +57,7 @@ class RuleResolverService:
                 allowed: set[str] | None = None
                 daily_limit: int | None = None
                 attendance_limit: int | None = None
+                attendance_preference_limit: int | None = None
                 applied: list[str] = []
                 for rule in sorted(applicable, key=lambda item: item.priority):
                     changed = False
@@ -74,8 +77,14 @@ class RuleResolverService:
                         rule.attendance_streak_limit,
                         rule.constraint_type,
                     )
+                    attendance_preference_limit = self._resolve_limit(
+                        attendance_preference_limit,
+                        rule.preferred_attendance_streak_limit,
+                        rule.constraint_type,
+                    )
                     changed = changed or rule.daily_hard_limit is not None
                     changed = changed or rule.attendance_streak_limit is not None
+                    changed = changed or rule.preferred_attendance_streak_limit is not None
                     if changed:
                         applied.append(rule.rule_id)
                 target = f"class={class_model.class_id}/date={calendar_day.target_date}"
@@ -99,12 +108,21 @@ class RuleResolverService:
                             "RULE_REQUIRED_VALUE_MISSING", target, "daily_hard_limitが未解決です"
                         )
                     )
-                if attendance_limit is None:
+                if (
+                    attendance_limit is not None
+                    and attendance_preference_limit is not None
+                    and attendance_preference_limit > attendance_limit
+                ):
                     issues.append(
                         RuleResolutionIssueModel(
-                            "RULE_REQUIRED_VALUE_MISSING",
+                            "RULE_ATTENDANCE_LIMIT_ORDER",
                             target,
-                            "attendance_streak_limitが未解決です",
+                            (
+                                "preferred_attendance_streak_limitは"
+                                "attendance_streak_limit以下である必要があります: "
+                                f"preferred={attendance_preference_limit}, "
+                                f"hard={attendance_limit}"
+                            ),
                         )
                     )
                 class_rules.append(
@@ -119,6 +137,7 @@ class RuleResolverService:
                         daily_hard_limit=daily_limit,
                         attendance_streak_limit=attendance_limit,
                         applied_rule_ids=tuple(dict.fromkeys(applied)),
+                        preferred_attendance_streak_limit=attendance_preference_limit,
                     )
                 )
 
@@ -176,11 +195,18 @@ class RuleResolverService:
             period_ids,
             issues,
         )
+        lesson_count_preference_rules = self._resolve_lesson_count_preference_rules(
+            input_data,
+            output_days,
+            period_ids,
+            issues,
+        )
         return ResolvedRuleSetModel(
             class_date_rules=tuple(class_rules),
             teacher_date_rules=tuple(teacher_rules),
             issues=tuple(issues),
             lesson_count_rules=tuple(lesson_count_rules),
+            lesson_count_preference_rules=tuple(lesson_count_preference_rules),
         )
 
     def _resolve_lesson_count_rules(
@@ -238,6 +264,71 @@ class RuleResolverService:
                     class_id=target[0],
                     subject_id=target[1],
                     exact_periods=segments[0].exact_periods,
+                    target_slots=tuple(
+                        sorted(
+                            target_slots,
+                            key=lambda item: (item[0], period_orders[item[1]]),
+                        )
+                    ),
+                )
+            )
+        return resolved
+
+    def _resolve_lesson_count_preference_rules(
+        self,
+        input_data: InputDataModel,
+        output_days: list[CalendarDayModel],
+        ordered_period_ids: tuple[str, ...],
+        issues: list[RuleResolutionIssueModel],
+    ) -> list[ResolvedLessonCountPreferenceRuleModel]:
+        requirements_by_target: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for requirement in input_data.lesson_requirements:
+            if requirement.enabled:
+                requirements_by_target[(requirement.class_id, requirement.subject_id)].append(
+                    requirement.requirement_id
+                )
+        segments_by_rule: dict[str, list[LessonCountPreferenceRuleSegmentModel]] = defaultdict(list)
+        for segment in input_data.lesson_count_preference_rule_segments:
+            segments_by_rule[segment.rule_id].append(segment)
+
+        period_orders = {period_id: order for order, period_id in enumerate(ordered_period_ids)}
+        resolved: list[ResolvedLessonCountPreferenceRuleModel] = []
+        for rule_id, segments in sorted(segments_by_rule.items()):
+            if not segments or not segments[0].enabled:
+                continue
+            target = (segments[0].class_id, segments[0].subject_id)
+            requirement_ids = requirements_by_target[target]
+            if len(requirement_ids) != 1:
+                issues.append(
+                    RuleResolutionIssueModel(
+                        "LESSON_COUNT_PREFERENCE_TARGET_UNRESOLVED",
+                        rule_id,
+                        (
+                            "有効なclass_id/subject_idの授業要求を一意に解決できません: "
+                            f"class_id={target[0]}, subject_id={target[1]}"
+                        ),
+                    )
+                )
+                continue
+            target_slots: set[tuple[date, str]] = set()
+            for segment in segments:
+                for calendar_day in output_days:
+                    target_date = calendar_day.target_date
+                    if not (segment.start_date <= target_date <= segment.end_date):
+                        continue
+                    period_ids = (
+                        calendar_day.enabled_period_ids
+                        if segment.target_period_ids == ("ALL",)
+                        else segment.target_period_ids
+                    )
+                    target_slots.update((target_date, period_id) for period_id in period_ids)
+            resolved.append(
+                ResolvedLessonCountPreferenceRuleModel(
+                    rule_id=rule_id,
+                    requirement_id=requirement_ids[0],
+                    class_id=target[0],
+                    subject_id=target[1],
+                    preferred_periods=segments[0].preferred_periods,
                     target_slots=tuple(
                         sorted(
                             target_slots,
@@ -347,6 +438,10 @@ class RuleResolverService:
                 ("daily_hard_limit", rule.daily_hard_limit),
                 ("consecutive_limit", rule.consecutive_limit),
                 ("attendance_streak_limit", rule.attendance_streak_limit),
+                (
+                    "preferred_attendance_streak_limit",
+                    rule.preferred_attendance_streak_limit,
+                ),
             )
             for field, value in properties:
                 if value is None:
