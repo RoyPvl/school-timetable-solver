@@ -294,9 +294,7 @@ def test_capacity_validator_detects_h18_homeroom_candidate_shortage(
     candidates_without_homeroom = replace(
         candidates,
         candidates=tuple(
-            replace(candidate, teacher_id="T1")
-            if candidate.class_id == "CL2"
-            else candidate
+            replace(candidate, teacher_id="T1") if candidate.class_id == "CL2" else candidate
             for candidate in candidates.candidates
         ),
     )
@@ -307,9 +305,7 @@ def test_capacity_validator_detects_h18_homeroom_candidate_shortage(
         candidates_without_homeroom,
     )
 
-    assert any(
-        issue.rule_id == "HOMEROOM_BOUNDARY_TEACHER_SUPPLY_SHORTAGE" for issue in issues
-    )
+    assert any(issue.rule_id == "HOMEROOM_BOUNDARY_TEACHER_SUPPLY_SHORTAGE" for issue in issues)
 
 
 def test_validator_detects_lesson_count_preference_group_and_range_errors(

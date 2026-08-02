@@ -7,7 +7,6 @@ from itertools import combinations, pairwise
 from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.solver_context import SolverContext
-from school_timetable_solver.model.solver_models import ResolvedHomeroomBoundaryRuleModel
 
 
 class RequiredLessonCountConstraint:
@@ -59,199 +58,139 @@ class LessonCountInScopeConstraint:
 
 
 class HomeroomBoundaryConstraint:
-    """H18: make the first and last class lessons in each interval homeroom lessons."""
+    """H18: put a homeroom lesson on the first and last attendance day."""
 
     rule_id = "H18"
 
     def apply(self, context: SolverContext) -> None:
-        variables_by_class_slot: dict[
-            tuple[str, date, str],
+        variables_by_class_date: dict[
+            tuple[str, date],
             list[tuple[str, cp_model.IntVar]],
         ] = defaultdict(list)
         for candidate in context.candidates:
-            variables_by_class_slot[
-                (candidate.class_id, candidate.target_date, candidate.period_id)
-            ].append(
+            variables_by_class_date[(candidate.class_id, candidate.target_date)].append(
                 (
                     candidate.teacher_id,
                     context.assignment_variables[candidate.candidate_id],
                 )
             )
 
-        self.apply_boundary_anchors(context)
-
         for rule in context.homeroom_boundary_rules:
-            ordered_slots = sorted(
-                (
-                    (target_date, period_id)
-                    for class_id, target_date, period_id in variables_by_class_slot
-                    if class_id == rule.class_id and rule.start_date <= target_date <= rule.end_date
-                ),
-                key=lambda item: (item[0], context.period_orders[item[1]]),
+            target_dates = sorted(
+                target_date
+                for class_id, target_date in variables_by_class_date
+                if class_id == rule.class_id and rule.start_date <= target_date <= rule.end_date
             )
-            all_variables = [
-                variable
-                for target_date, period_id in ordered_slots
-                for _, variable in variables_by_class_slot[(rule.class_id, target_date, period_id)]
-            ]
-            context.model.add(sum(all_variables) >= 1)
-            if not ordered_slots:
-                continue
-
-            slot_states: list[cp_model.IntVar] = []
-            for slot_index, (target_date, period_id) in enumerate(ordered_slots):
-                slot_variables = variables_by_class_slot[(rule.class_id, target_date, period_id)]
-                homeroom_variables = [
-                    variable
-                    for teacher_id, variable in slot_variables
-                    if teacher_id == rule.teacher_id
-                ]
-                non_homeroom_variables = [
-                    variable
-                    for teacher_id, variable in slot_variables
-                    if teacher_id != rule.teacher_id
-                ]
-                slot_state = context.model.new_int_var(
-                    0,
-                    2,
-                    f"h18_slot_state__{rule.rule_id}__{slot_index}",
-                )
-                context.model.add(
-                    slot_state == sum(homeroom_variables) + 2 * sum(non_homeroom_variables)
-                )
-                slot_states.append(slot_state)
-
-            context.model.add_automaton(
-                slot_states,
-                0,
-                [1],
-                [
-                    (0, 0, 0),
-                    (0, 1, 1),
-                    (1, 0, 1),
-                    (1, 1, 1),
-                    (1, 2, 2),
-                    (2, 0, 2),
-                    (2, 1, 1),
-                    (2, 2, 2),
-                ],
-            )
-        context.applied_rule_ids.append(self.rule_id)
-
-    def apply_boundary_anchors(self, context: SolverContext) -> None:
-        variables_by_class_slot: dict[
-            tuple[str, date, str],
-            list[tuple[str, cp_model.IntVar]],
-        ] = defaultdict(list)
-        for candidate in context.candidates:
-            variables_by_class_slot[
-                (candidate.class_id, candidate.target_date, candidate.period_id)
-            ].append(
-                (
-                    candidate.teacher_id,
-                    context.assignment_variables[candidate.candidate_id],
-                )
-            )
-
-        start_boundary_slots = self._boundary_slot_assignments(context, "start")
-        end_boundary_slots = self._boundary_slot_assignments(context, "end")
-        for rule in context.homeroom_boundary_rules:
-            boundary_slots = {
-                start_boundary_slots.get(rule.rule_id),
-                end_boundary_slots.get(rule.rule_id),
-            }
-            if None in boundary_slots:
+            if not target_dates:
                 context.model.add(0 >= 1)
                 continue
-            for boundary_slot in boundary_slots:
-                assert boundary_slot is not None
-                boundary_date, boundary_period_id = boundary_slot
-                context.model.add(
-                    sum(
-                        variable
-                        for teacher_id, variable in variables_by_class_slot[
-                            (rule.class_id, boundary_date, boundary_period_id)
-                        ]
-                        if teacher_id == rule.teacher_id
-                    )
-                    >= 1
-                )
 
-    def _boundary_slot_assignments(
-        self,
-        context: SolverContext,
-        boundary: str,
-    ) -> dict[str, tuple[date, str]]:
-        grouped_rules: dict[
-            tuple[str, date],
-            list[ResolvedHomeroomBoundaryRuleModel],
-        ] = defaultdict(list)
-        for rule in context.homeroom_boundary_rules:
-            boundary_date = rule.start_date if boundary == "start" else rule.end_date
-            grouped_rules[(rule.teacher_id, boundary_date)].append(rule)
-
-        assignments: dict[str, tuple[date, str]] = {}
-        for rules in grouped_rules.values():
-            group_assignments = self._assign_distinct_slots(
-                context,
-                tuple(rules),
-                reverse=boundary == "end",
-            )
-            assignments.update(group_assignments)
-        return assignments
-
-    def _assign_distinct_slots(
-        self,
-        context: SolverContext,
-        rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...],
-        *,
-        reverse: bool,
-    ) -> dict[str, tuple[date, str]]:
-        candidate_slots_by_rule: dict[str, tuple[tuple[date, str], ...]] = {}
-        for rule in rules:
-            slots = {
-                (candidate.target_date, candidate.period_id)
-                for candidate in context.candidates
-                if candidate.class_id == rule.class_id
-                and candidate.teacher_id == rule.teacher_id
-                and rule.start_date <= candidate.target_date <= rule.end_date
+            homeroom_variables_by_date: dict[date, list[cp_model.IntVar]] = {
+                target_date: [
+                    variable
+                    for teacher_id, variable in variables_by_class_date[
+                        (rule.class_id, target_date)
+                    ]
+                    if teacher_id == rule.teacher_id
+                ]
+                for target_date in target_dates
             }
-            candidate_slots_by_rule[rule.rule_id] = tuple(
-                sorted(
-                    slots,
-                    key=lambda slot: (slot[0], context.period_orders[slot[1]]),
-                    reverse=reverse,
+            eligible_boundary_dates = [
+                target_date
+                for target_date in target_dates
+                if homeroom_variables_by_date[target_date]
+            ]
+            if not eligible_boundary_dates:
+                context.model.add(0 >= 1)
+                continue
+
+            attendance_variables_by_date: dict[date, cp_model.IntVar] = {}
+            for target_date in target_dates:
+                attendance_variable = context.model.new_bool_var(
+                    f"h18_attendance__{rule.rule_id}__{target_date.isoformat()}"
                 )
-            )
+                context.model.add_max_equality(
+                    attendance_variable,
+                    [
+                        variable
+                        for _, variable in variables_by_class_date[(rule.class_id, target_date)]
+                    ],
+                )
+                attendance_variables_by_date[target_date] = attendance_variable
 
-        ordered_rules = sorted(
-            rules,
-            key=lambda rule: (
-                len(candidate_slots_by_rule[rule.rule_id]),
+            first_date_variables = self._add_boundary_date_variables(
+                context,
                 rule.rule_id,
-            ),
-        )
-        assignments: dict[str, tuple[date, str]] = {}
-        used_slots: set[tuple[date, str]] = set()
+                target_dates,
+                attendance_variables_by_date,
+                "first",
+            )
+            last_date_variables = self._add_boundary_date_variables(
+                context,
+                rule.rule_id,
+                list(reversed(target_dates)),
+                attendance_variables_by_date,
+                "last",
+            )
+            context.model.add_exactly_one(first_date_variables)
+            context.model.add_exactly_one(last_date_variables)
 
-        def assign(rule_index: int) -> bool:
-            if rule_index == len(ordered_rules):
-                return True
-            rule = ordered_rules[rule_index]
-            for slot in candidate_slots_by_rule[rule.rule_id]:
-                if slot in used_slots:
-                    continue
-                assignments[rule.rule_id] = slot
-                used_slots.add(slot)
-                if assign(rule_index + 1):
-                    return True
-                used_slots.remove(slot)
-                assignments.pop(rule.rule_id)
-            return False
+            for target_date in eligible_boundary_dates:
+                first_date_variable = first_date_variables[target_dates.index(target_date)]
+                last_date_variable = last_date_variables[
+                    list(reversed(target_dates)).index(target_date)
+                ]
+                context.homeroom_first_date_variables[(rule.rule_id, target_date)] = (
+                    first_date_variable
+                )
+                context.homeroom_last_date_variables[(rule.rule_id, target_date)] = (
+                    last_date_variable
+                )
+                context.model.add_bool_or(homeroom_variables_by_date[target_date]).only_enforce_if(
+                    first_date_variable
+                )
+                context.model.add_bool_or(homeroom_variables_by_date[target_date]).only_enforce_if(
+                    last_date_variable
+                )
+            for target_date in set(target_dates) - set(eligible_boundary_dates):
+                context.model.add(first_date_variables[target_dates.index(target_date)] == 0)
+                context.model.add(
+                    last_date_variables[list(reversed(target_dates)).index(target_date)] == 0
+                )
+        context.applied_rule_ids.append(self.rule_id)
 
-        if assign(0):
-            return assignments
-        return {}
+    def _add_boundary_date_variables(
+        self,
+        context: SolverContext,
+        rule_id: str,
+        ordered_dates: list[date],
+        attendance_variables_by_date: dict[date, cp_model.IntVar],
+        boundary_name: str,
+    ) -> list[cp_model.IntVar]:
+        boundary_variables: list[cp_model.IntVar] = []
+        attendance_seen: cp_model.IntVar | None = None
+        for date_index, target_date in enumerate(ordered_dates):
+            attendance_variable = attendance_variables_by_date[target_date]
+            boundary_variable = context.model.new_bool_var(
+                f"h18_{boundary_name}_date__{rule_id}__{target_date.isoformat()}"
+            )
+            if attendance_seen is None:
+                context.model.add(boundary_variable == attendance_variable)
+                attendance_seen = attendance_variable
+            else:
+                context.model.add(boundary_variable <= attendance_variable)
+                context.model.add(boundary_variable + attendance_seen <= 1)
+                context.model.add(boundary_variable >= attendance_variable - attendance_seen)
+                next_attendance_seen = context.model.new_bool_var(
+                    f"h18_{boundary_name}_seen__{rule_id}__{date_index}"
+                )
+                context.model.add_max_equality(
+                    next_attendance_seen,
+                    [attendance_seen, attendance_variable],
+                )
+                attendance_seen = next_attendance_seen
+            boundary_variables.append(boundary_variable)
+        return boundary_variables
 
 
 class TeacherOverlapConstraint:
@@ -572,20 +511,35 @@ class TeacherSingleCampusPerDayConstraint:
     rule_id = "H11"
 
     def apply(self, context: SolverContext) -> None:
-        campus_groups: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
+        variables_by_teacher_date_campus: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
         for candidate in context.candidates:
-            campus_groups[
-                (candidate.teacher_id, candidate.target_date, candidate.campus_id)
-            ].append(context.assignment_variables[candidate.candidate_id])
-        campus_day_variables: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
-        for (teacher_id, target_date, campus_id), variables in campus_groups.items():
-            campus_variable = context.model.new_bool_var(
+            key = (candidate.teacher_id, candidate.target_date, candidate.campus_id)
+            variables_by_teacher_date_campus[key].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+
+        variables_by_teacher_date: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        for (
+            teacher_id,
+            target_date,
+            campus_id,
+        ), assignment_variables in variables_by_teacher_date_campus.items():
+            campus_day_variable = context.model.new_bool_var(
                 f"teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
             )
-            context.model.add_max_equality(campus_variable, variables)
-            campus_day_variables[(teacher_id, target_date)].append(campus_variable)
-        for variables in campus_day_variables.values():
-            context.model.add(sum(variables) <= 1)
+            context.teacher_campus_day_variables[(teacher_id, target_date, campus_id)] = (
+                campus_day_variable
+            )
+            variables_by_teacher_date[(teacher_id, target_date)].append(campus_day_variable)
+            assignment_count = sum(assignment_variables)
+            context.model.add(assignment_count >= campus_day_variable)
+            context.model.add(assignment_count <= len(assignment_variables) * campus_day_variable)
+
+        for variables in variables_by_teacher_date.values():
+            context.model.add_at_most_one(variables)
         context.applied_rule_ids.append(self.rule_id)
 
 

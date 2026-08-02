@@ -164,11 +164,14 @@ def test_h17_lesson_count_in_scope_requires_exact_count() -> None:
     assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
 
 
-def test_h18_homeroom_boundary_allows_later_start_and_requires_both_edges() -> None:
+def test_h18_allows_non_homeroom_lessons_before_and_after_on_boundary_days() -> None:
     candidates = (
+        _candidate("QN1__1", "T1", DAY_ONE, "C1", "P1", "CL2"),
         _candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),
-        _candidate("QN__1", "T1", DAY_ONE, "C1", "P3", "CL2"),
-        _candidate("QH__2", "T2", DAY_TWO, "C1", "P1", "CL2"),
+        _candidate("QN2__1", "T1", DAY_ONE, "C1", "P3", "CL2"),
+        _candidate("QN3__1", "T1", DAY_TWO, "C1", "P1", "CL2"),
+        _candidate("QH__2", "T2", DAY_TWO, "C1", "P2", "CL2"),
+        _candidate("QN4__1", "T1", DAY_TWO, "C1", "P3", "CL2"),
     )
     context = _context(candidates)
     context.homeroom_boundary_rules = (
@@ -185,7 +188,7 @@ def test_h18_homeroom_boundary_allows_later_start_and_requires_both_edges() -> N
     assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
 
 
-def test_h18_homeroom_boundary_rejects_non_homeroom_first_lesson() -> None:
+def test_h18_rejects_first_attendance_day_without_homeroom_lesson() -> None:
     candidates = (
         _candidate("QN__1", "T1", DAY_ONE, "C1", "P1", "CL2"),
         _candidate("QH__1", "T2", DAY_TWO, "C1", "P1", "CL2"),
@@ -205,7 +208,27 @@ def test_h18_homeroom_boundary_rejects_non_homeroom_first_lesson() -> None:
     assert _force_all_and_solve(context) == "INFEASIBLE"
 
 
-def test_h18_homeroom_boundary_allows_one_homeroom_lesson_in_interval() -> None:
+def test_h18_rejects_last_attendance_day_without_homeroom_lesson() -> None:
+    candidates = (
+        _candidate("QH__1", "T2", DAY_ONE, "C1", "P1", "CL2"),
+        _candidate("QN__1", "T1", DAY_TWO, "C1", "P1", "CL2"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h18_allows_one_homeroom_lesson_to_cover_one_attendance_day() -> None:
     candidates = (_candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),)
     context = _context(candidates)
     context.homeroom_boundary_rules = (
@@ -222,9 +245,28 @@ def test_h18_homeroom_boundary_allows_one_homeroom_lesson_in_interval() -> None:
     assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
 
 
-def test_h18_homeroom_boundary_uses_first_and_last_homeroom_available_dates() -> None:
+def test_h18_requires_at_least_one_attendance_day_in_each_range() -> None:
+    candidates = (_candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),)
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+    context.model.add(context.assignment_variables["QH__1"] == 0)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+
+
+def test_h18_moves_actual_first_attendance_day_after_homeroom_leave() -> None:
     candidates = (
-        _candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),
+        _candidate("QN__1", "T1", DAY_ONE, "C1", "P2", "CL2"),
         _candidate("QH__2", "T2", DAY_TWO, "C1", "P2", "CL2"),
     )
     context = _context(candidates)
@@ -238,18 +280,18 @@ def test_h18_homeroom_boundary_uses_first_and_last_homeroom_available_dates() ->
         ),
     )
     HomeroomBoundaryConstraint().apply(context)
-    context.model.add(context.assignment_variables["QH__1"] == 0)
     context.model.add(context.assignment_variables["QH__2"] == 1)
     solver = cp_model.CpSolver()
 
-    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+    assert solver.status_name(solver.solve(context.model)) in {"OPTIMAL", "FEASIBLE"}
+    assert solver.value(context.assignment_variables["QN__1"]) == 0
 
 
-def test_h18_homeroom_boundary_staggers_classes_with_same_teacher() -> None:
+def test_h18_allows_classes_with_same_homeroom_teacher_to_use_different_periods() -> None:
     candidates = (
         _candidate("QA__1", "T2", DAY_ONE, "C1", "P1", "CLA"),
         _candidate("QA__2", "T2", DAY_TWO, "C1", "P1", "CLA"),
-        _candidate("QB__1", "T2", DAY_ONE, "C1", "P1", "CLB"),
+        _candidate("QB__1", "T2", DAY_ONE, "C1", "P2", "CLB"),
         _candidate("QB__2", "T2", DAY_TWO, "C1", "P2", "CLB"),
     )
     context = _context(candidates)
@@ -259,13 +301,8 @@ def test_h18_homeroom_boundary_staggers_classes_with_same_teacher() -> None:
     )
     HomeroomBoundaryConstraint().apply(context)
     TeacherOverlapConstraint().apply(context)
-    solver = cp_model.CpSolver()
 
-    assert solver.status_name(solver.solve(context.model)) in {"OPTIMAL", "FEASIBLE"}
-    assert solver.value(context.assignment_variables["QA__1"]) == 1
-    assert solver.value(context.assignment_variables["QA__2"]) == 1
-    assert solver.value(context.assignment_variables["QB__1"]) == 0
-    assert solver.value(context.assignment_variables["QB__2"]) == 1
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
 
 
 def test_class_overlap_constraint_rejects_same_class_slot() -> None:

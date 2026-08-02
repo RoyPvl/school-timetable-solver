@@ -21,7 +21,6 @@ from school_timetable_solver.model.result_models import (
 )
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
-    ResolvedHomeroomBoundaryRuleModel,
     ResolvedRuleSetModel,
 )
 
@@ -93,10 +92,8 @@ class ValidateResultService:
         self._validate_required_counts(input_data, lessons, issues)
         self._validate_lesson_counts_in_scope(resolved_rules, lessons, issues)
         self._validate_homeroom_boundaries(
-            input_data,
             resolved_rules,
             lessons,
-            candidate_result,
             issues,
         )
         self._validate_overlaps(lessons, issues)
@@ -196,37 +193,16 @@ class ValidateResultService:
 
     def _validate_homeroom_boundaries(
         self,
-        input_data: InputDataModel,
         resolved_rules: ResolvedRuleSetModel,
         lessons: tuple[ScheduledLessonModel, ...],
-        candidate_result: CandidateBuildResultModel | None,
         issues: list[ValidationIssueModel],
     ) -> None:
-        period_orders = {period.period_id: period.output_order for period in input_data.periods}
-        start_boundary_slots: dict[str, tuple[date, str]] = {}
-        end_boundary_slots: dict[str, tuple[date, str]] = {}
-        if candidate_result is not None:
-            start_boundary_slots = self._homeroom_boundary_slot_assignments(
-                resolved_rules,
-                candidate_result,
-                period_orders,
-                "start",
-            )
-            end_boundary_slots = self._homeroom_boundary_slot_assignments(
-                resolved_rules,
-                candidate_result,
-                period_orders,
-                "end",
-            )
         for rule in resolved_rules.homeroom_boundary_rules:
-            scoped_lessons = sorted(
-                (
-                    lesson
-                    for lesson in lessons
-                    if lesson.class_id == rule.class_id
-                    and rule.start_date <= lesson.target_date <= rule.end_date
-                ),
-                key=lambda item: (item.target_date, period_orders[item.period_id]),
+            scoped_lessons = tuple(
+                lesson
+                for lesson in lessons
+                if lesson.class_id == rule.class_id
+                and rule.start_date <= lesson.target_date <= rule.end_date
             )
             if not scoped_lessons:
                 issues.append(
@@ -237,118 +213,31 @@ class ValidateResultService:
                     )
                 )
                 continue
-            first = scoped_lessons[0]
-            last = scoped_lessons[-1]
-            if first.teacher_id != rule.teacher_id or last.teacher_id != rule.teacher_id:
-                issues.append(
-                    self._issue(
-                        "H18",
-                        rule.rule_id,
-                        (
-                            "指定期間内の最初と最後の授業は担任担当である必要があります: "
-                            f"homeroom={rule.teacher_id}, first={first.teacher_id}, "
-                            f"last={last.teacher_id}"
-                        ),
-                    )
-                )
-            if candidate_result is None:
-                continue
-            expected_first_slot = start_boundary_slots.get(rule.rule_id)
-            expected_last_slot = end_boundary_slots.get(rule.rule_id)
-            if expected_first_slot is None or expected_last_slot is None:
-                continue
-            if (first.target_date, first.period_id) != expected_first_slot or (
-                last.target_date,
-                last.period_id,
-            ) != expected_last_slot:
-                issues.append(
-                    self._issue(
-                        "H18",
-                        rule.rule_id,
-                        (
-                            "担任重複を避けた最早開始・最遅終了コマにする必要があります: "
-                            f"expected_first={expected_first_slot}, "
-                            f"actual_first={(first.target_date, first.period_id)}, "
-                            f"expected_last={expected_last_slot}, "
-                            f"actual_last={(last.target_date, last.period_id)}"
-                        ),
-                    )
-                )
-
-    def _homeroom_boundary_slot_assignments(
-        self,
-        resolved_rules: ResolvedRuleSetModel,
-        candidate_result: CandidateBuildResultModel,
-        period_orders: dict[str, int],
-        boundary: str,
-    ) -> dict[str, tuple[date, str]]:
-        grouped_rules: dict[tuple[str, date], list[ResolvedHomeroomBoundaryRuleModel]] = (
-            defaultdict(list)
-        )
-        for rule in resolved_rules.homeroom_boundary_rules:
-            boundary_date = rule.start_date if boundary == "start" else rule.end_date
-            grouped_rules[(rule.teacher_id, boundary_date)].append(rule)
-
-        assignments: dict[str, tuple[date, str]] = {}
-        for rules in grouped_rules.values():
-            candidate_slots_by_rule: dict[str, tuple[tuple[date, str], ...]] = {}
-            for rule in rules:
-                slots = {
-                    (candidate.target_date, candidate.period_id)
-                    for candidate in candidate_result.candidates
-                    if candidate.class_id == rule.class_id
-                    and candidate.teacher_id == rule.teacher_id
-                    and rule.start_date <= candidate.target_date <= rule.end_date
-                }
-                candidate_slots_by_rule[rule.rule_id] = tuple(
-                    sorted(
-                        slots,
-                        key=lambda slot: (slot[0], period_orders[slot[1]]),
-                        reverse=boundary == "end",
-                    )
-                )
-
-            assignments.update(
-                self._assign_homeroom_distinct_slots(
-                    tuple(rules),
-                    candidate_slots_by_rule,
-                )
+            attendance_dates = sorted({lesson.target_date for lesson in scoped_lessons})
+            first_date = attendance_dates[0]
+            last_date = attendance_dates[-1]
+            first_has_homeroom = any(
+                lesson.target_date == first_date and lesson.teacher_id == rule.teacher_id
+                for lesson in scoped_lessons
             )
-        return assignments
-
-    def _assign_homeroom_distinct_slots(
-        self,
-        rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...],
-        candidate_slots_by_rule: dict[str, tuple[tuple[date, str], ...]],
-    ) -> dict[str, tuple[date, str]]:
-        ordered_rules = sorted(
-            rules,
-            key=lambda rule: (
-                len(candidate_slots_by_rule[rule.rule_id]),
-                rule.rule_id,
-            ),
-        )
-        assignments: dict[str, tuple[date, str]] = {}
-        used_slots: set[tuple[date, str]] = set()
-
-        def assign(rule_index: int) -> bool:
-            if rule_index == len(ordered_rules):
-                return True
-            rule = ordered_rules[rule_index]
-            for slot in candidate_slots_by_rule[rule.rule_id]:
-                if slot in used_slots:
-                    continue
-                assignments[rule.rule_id] = slot
-                used_slots.add(slot)
-                if assign(rule_index + 1):
-                    return True
-                used_slots.remove(slot)
-                assignments.pop(rule.rule_id)
-            return False
-
-        if assign(0):
-            return assignments
-        return {}
+            last_has_homeroom = any(
+                lesson.target_date == last_date and lesson.teacher_id == rule.teacher_id
+                for lesson in scoped_lessons
+            )
+            if not first_has_homeroom or not last_has_homeroom:
+                issues.append(
+                    self._issue(
+                        "H18",
+                        rule.rule_id,
+                        (
+                            "指定期間内の最初と最後の登校日に担任授業が必要です: "
+                            f"homeroom={rule.teacher_id}, first_date={first_date}, "
+                            f"first_has_homeroom={first_has_homeroom}, "
+                            f"last_date={last_date}, "
+                            f"last_has_homeroom={last_has_homeroom}"
+                        ),
+                    )
+                )
 
     def _validate_required_counts(
         self,

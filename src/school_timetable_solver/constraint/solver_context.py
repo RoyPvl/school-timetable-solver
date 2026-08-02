@@ -35,8 +35,17 @@ class SolverContext:
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
     homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
+    homeroom_first_date_variables: dict[tuple[str, date], cp_model.IntVar] = field(
+        default_factory=dict
+    )
+    homeroom_last_date_variables: dict[tuple[str, date], cp_model.IntVar] = field(
+        default_factory=dict
+    )
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
+    teacher_campus_day_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(
+        default_factory=dict
+    )
     class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
     class_room_presence_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(
         default_factory=dict

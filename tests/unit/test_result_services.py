@@ -103,7 +103,7 @@ def test_validate_result_reports_output_date_teacher_leave_allowed_period_and_ca
     assert {"H04", "H05", "H06", "H11", "H13", "H14"} <= rule_ids
 
 
-def test_validate_result_reports_h18_when_interval_edge_is_not_homeroom(
+def test_validate_result_reports_h18_when_first_attendance_day_has_no_homeroom(
     minimal_input_data: InputDataModel,
 ) -> None:
     input_data = replace(
@@ -143,6 +143,69 @@ def test_validate_result_reports_h18_when_interval_edge_is_not_homeroom(
     report = ValidateResultService().execute(input_data, resolved, lessons)
 
     assert "H18" in {issue.rule_id for issue in report.issues}
+
+
+def test_validate_result_accepts_homeroom_anywhere_on_first_and_last_attendance_day(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HB1",
+                "前半",
+                True,
+                "CL2",
+                date(2026, 7, 27),
+                date(2026, 7, 28),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = (
+        _lesson(
+            requirement_id="QN1",
+            period_id="P1",
+            teacher_id="T1",
+            class_id="CL2",
+            subject_id="S2",
+            campus_id="C2",
+            room_id="R3",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            period_id="P2",
+            teacher_id="T2",
+            class_id="CL2",
+            subject_id="S2",
+            campus_id="C2",
+            room_id="R3",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            target_date=date(2026, 7, 28),
+            period_id="P1",
+            teacher_id="T2",
+            class_id="CL2",
+            subject_id="S2",
+            campus_id="C2",
+            room_id="R3",
+        ),
+        _lesson(
+            requirement_id="QN2",
+            target_date=date(2026, 7, 28),
+            period_id="P2",
+            teacher_id="T1",
+            class_id="CL2",
+            subject_id="S2",
+            campus_id="C2",
+            room_id="R3",
+        ),
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    assert "H18" not in {issue.rule_id for issue in report.issues}
 
 
 def test_assign_rooms_uses_class_id_and_room_output_order_stably(
