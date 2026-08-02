@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from school_timetable_solver.model.input_models import GenerationMode, InputData
 from school_timetable_solver.model.result_models import GenerationRequestModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedRuleSetModel,
 )
 from school_timetable_solver.service.planning_services import (
@@ -39,6 +42,38 @@ def test_lower_priority_reserve_ratio_preserves_total_reserve_when_phase_added()
     assert service._lower_priority_reserve_ratio(8) == pytest.approx(0.75 / 7)
     assert service._lower_priority_reserve_ratio(9) == pytest.approx(0.75 / 8)
     assert service._lower_priority_reserve_ratio(1) == 0.0
+
+
+def test_homeroom_rule_batches_group_classes_by_teacher_and_workload() -> None:
+    service = TimetableSolverService(())
+    rules = tuple(
+        ResolvedHomeroomBoundaryRuleModel(
+            f"HB_{class_index}_{interval_index}",
+            f"CL{class_index}",
+            "T_SHARED" if class_index in {0, 1} else f"T{class_index}",
+            date(2026, 7, 18),
+            date(2026, 8, 6),
+        )
+        for class_index in range(6)
+        for interval_index in range(2)
+    )
+
+    candidate_counts = Counter({f"CL{class_index}": 100 - class_index for class_index in range(6)})
+    batches = service._homeroom_rule_batches(rules, candidate_counts)
+
+    assert len(batches) == 5
+    assert all(len({rule.teacher_id for rule in batch}) == 1 for batch in batches)
+    assert {rule.class_id for rule in batches[0]} == {"CL0", "CL1"}
+    assert [batch[0].class_id for batch in batches[1:]] == ["CL2", "CL3", "CL4", "CL5"]
+    assert all(
+        [
+            sum(rule.class_id == f"CL{class_index}" for rule in batch)
+            for batch in batches
+            if any(rule.class_id == f"CL{class_index}" for rule in batch)
+        ]
+        == [2]
+        for class_index in range(6)
+    )
 
 
 def test_initial_feasible_solution_is_hinted_to_first_soft_phase(

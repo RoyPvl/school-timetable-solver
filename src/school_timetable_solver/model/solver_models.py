@@ -52,12 +52,22 @@ class ResolvedLessonCountPreferenceRuleModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedHomeroomBoundaryRuleModel:
+    rule_id: str
+    class_id: str
+    teacher_id: str
+    start_date: date
+    end_date: date
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedRuleSetModel:
     class_date_rules: tuple[EffectiveClassDateRuleModel, ...]
     teacher_date_rules: tuple[EffectiveTeacherDateRuleModel, ...]
     issues: tuple[RuleResolutionIssueModel, ...] = ()
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
+    homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

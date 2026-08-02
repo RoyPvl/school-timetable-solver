@@ -10,17 +10,18 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_6_with_empty_optional_rows() -> None:
+def test_reader_accepts_contract_v0_7_with_homeroom_boundary_rule() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.6"
+    assert result.input_data.settings.schema_version == "0.7"
     assert len(result.input_data.periods) == 6
     assert result.input_data.teachers[0].home_campus_id == "C1"
     assert not result.input_data.teacher_leaves
     assert not result.input_data.lesson_count_rule_segments
     assert not result.input_data.lesson_count_preference_rule_segments
+    assert result.input_data.homeroom_boundary_rules[0].rule_id == "HB_CL2_SAMPLE"
     exam_rule = next(
         rule for rule in result.input_data.placement_rules if rule.rule_id == "RULE_ATTENDANCE_EXAM"
     )
@@ -224,6 +225,18 @@ def test_missing_required_sheet_is_format_error(tmp_path: Path) -> None:
     workbook = load_workbook(SAMPLE)
     del workbook["14_授業配置数選好ルール"]
     target = tmp_path / "missing-sheet.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is None
+    assert any(issue.rule_id == "REQUIRED_SHEET_MISSING" for issue in result.issues)
+
+
+def test_missing_homeroom_boundary_sheet_is_format_error(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    del workbook["15_担任授業期間ルール"]
+    target = tmp_path / "missing-homeroom-boundary-sheet.xlsx"
     workbook.save(target)
 
     result = ExcelInputReaderAdapter().read(target)

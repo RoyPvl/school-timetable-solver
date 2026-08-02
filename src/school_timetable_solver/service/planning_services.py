@@ -17,6 +17,7 @@ from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     EffectiveClassDateRuleModel,
     EffectiveTeacherDateRuleModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
     ResolvedRuleSetModel,
@@ -201,12 +202,31 @@ class RuleResolverService:
             period_ids,
             issues,
         )
+        classes_by_id = {item.class_id: item for item in input_data.classes}
+        homeroom_boundary_rules: list[ResolvedHomeroomBoundaryRuleModel] = []
+        for rule in input_data.homeroom_boundary_rules:
+            class_model = classes_by_id.get(rule.class_id)
+            if not rule.enabled or class_model is None:
+                continue
+            teacher_id = class_model.homeroom_teacher_id
+            if teacher_id is None:
+                continue
+            homeroom_boundary_rules.append(
+                ResolvedHomeroomBoundaryRuleModel(
+                    rule_id=rule.rule_id,
+                    class_id=rule.class_id,
+                    teacher_id=teacher_id,
+                    start_date=rule.start_date,
+                    end_date=rule.end_date,
+                )
+            )
         return ResolvedRuleSetModel(
             class_date_rules=tuple(class_rules),
             teacher_date_rules=tuple(teacher_rules),
             issues=tuple(issues),
             lesson_count_rules=tuple(lesson_count_rules),
             lesson_count_preference_rules=tuple(lesson_count_preference_rules),
+            homeroom_boundary_rules=tuple(homeroom_boundary_rules),
         )
 
     def _resolve_lesson_count_rules(

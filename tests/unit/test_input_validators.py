@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 from school_timetable_solver.model.input_models import (
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
@@ -42,6 +43,26 @@ def test_validator_detects_duplicate_ids_and_output_orders(
         "DUPLICATE_CAMPUS_OUTPUT_ORDER",
         "DUPLICATE_ROOM_OUTPUT_ORDER",
     } <= rule_ids
+
+
+def test_validator_rejects_overlapping_homeroom_ranges_and_missing_homeroom(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HB1", "前半1", True, "CL1", date(2026, 7, 27), date(2026, 7, 28)
+            ),
+            HomeroomBoundaryRuleModel(
+                "HB2", "前半2", True, "CL1", date(2026, 7, 28), date(2026, 7, 29)
+            ),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {"HOMEROOM_TEACHER_REQUIRED", "HOMEROOM_BOUNDARY_RANGE_OVERLAP"} <= rule_ids
 
 
 def test_validator_detects_unknown_and_disabled_references(
@@ -255,6 +276,40 @@ def test_capacity_validator_detects_h17_scope_supply_shortage(
     issues = CapacityFeasibilityValidator().validate(input_data, resolved, candidates)
 
     assert any(issue.rule_id == "LESSON_COUNT_RULE_SCOPE_SUPPLY_SHORTAGE" for issue in issues)
+
+
+def test_capacity_validator_detects_h18_homeroom_candidate_shortage(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HB1", "前半", True, "CL2", date(2026, 7, 27), date(2026, 7, 28)
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    candidates = CandidateBuilderService().execute(input_data, resolved)
+    candidates_without_homeroom = replace(
+        candidates,
+        candidates=tuple(
+            replace(candidate, teacher_id="T1")
+            if candidate.class_id == "CL2"
+            else candidate
+            for candidate in candidates.candidates
+        ),
+    )
+
+    issues = CapacityFeasibilityValidator().validate(
+        input_data,
+        resolved,
+        candidates_without_homeroom,
+    )
+
+    assert any(
+        issue.rule_id == "HOMEROOM_BOUNDARY_TEACHER_SUPPLY_SHORTAGE" for issue in issues
+    )
 
 
 def test_validator_detects_lesson_count_preference_group_and_range_errors(

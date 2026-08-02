@@ -103,6 +103,16 @@ class LessonCountPreferenceRuleSegmentModel:
 
 
 @dataclass(frozen=True, slots=True)
+class HomeroomBoundaryRuleModel:
+    rule_id: str
+    rule_name: str
+    enabled: bool
+    class_id: str
+    start_date: date
+    end_date: date
+
+
+@dataclass(frozen=True, slots=True)
 class InputDataModel:
     settings: InputWorkbookSettingsModel
     calendar_days: tuple[CalendarDayModel, ...]
@@ -120,3 +130,4 @@ class InputDataModel:
         LessonCountPreferenceRuleSegmentModel,
         ...,
     ] = ()
+    homeroom_boundary_rules: tuple[HomeroomBoundaryRuleModel, ...] = ()

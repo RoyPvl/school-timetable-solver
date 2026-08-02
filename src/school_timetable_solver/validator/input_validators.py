@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterable
 from datetime import date, timedelta
+from itertools import pairwise
 
 from school_timetable_solver.model.input_models import (
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
@@ -12,6 +14,7 @@ from school_timetable_solver.model.input_models import (
 from school_timetable_solver.model.result_models import ValidationIssueModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedRuleSetModel,
 )
 
@@ -27,6 +30,7 @@ class ReferenceIntegrityValidator:
         self._validate_rules(input_data, issues)
         self._validate_lesson_count_rules(input_data, issues)
         self._validate_lesson_count_preference_rules(input_data, issues)
+        self._validate_homeroom_boundary_rules(input_data, issues)
         return issues
 
     def _validate_uniqueness(
@@ -53,6 +57,10 @@ class ReferenceIntegrityValidator:
             (
                 "lesson_count_preference_segment_id",
                 (item.segment_id for item in input_data.lesson_count_preference_rule_segments),
+            ),
+            (
+                "homeroom_boundary_rule_id",
+                (item.rule_id for item in input_data.homeroom_boundary_rules),
             ),
         )
         for label, identifiers in id_groups:
@@ -714,6 +722,7 @@ class ReferenceIntegrityValidator:
                         "start_dateはend_date以前である必要があります",
                     )
                 )
+
             else:
                 date_count = (segment.end_date - segment.start_date).days + 1
                 missing_dates = [
@@ -821,6 +830,102 @@ class ReferenceIntegrityValidator:
                         ),
                     )
                 )
+
+    def _validate_homeroom_boundary_rules(
+        self,
+        input_data: InputDataModel,
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        classes = {item.class_id: item for item in input_data.classes}
+        teachers = {item.teacher_id: item for item in input_data.teachers}
+        calendar_dates = {item.target_date for item in input_data.calendar_days}
+        active_requirements = tuple(item for item in input_data.lesson_requirements if item.enabled)
+        enabled_rules_by_class: dict[str, list[HomeroomBoundaryRuleModel]] = defaultdict(list)
+
+        for rule in input_data.homeroom_boundary_rules:
+            self._require_reference(issues, rule.rule_id, "class_id", rule.class_id, classes)
+            if rule.start_date > rule.end_date:
+                issues.append(
+                    self._issue(
+                        "INVALID_HOMEROOM_BOUNDARY_DATE_RANGE",
+                        rule.rule_id,
+                        "start_dateはend_date以前である必要があります",
+                    )
+                )
+            else:
+                date_count = (rule.end_date - rule.start_date).days + 1
+                missing_dates = [
+                    rule.start_date + timedelta(days=offset)
+                    for offset in range(date_count)
+                    if rule.start_date + timedelta(days=offset) not in calendar_dates
+                ]
+                if missing_dates:
+                    issues.append(
+                        self._issue(
+                            "UNKNOWN_HOMEROOM_BOUNDARY_DATE",
+                            rule.rule_id,
+                            f"日付範囲に開講カレンダー未登録日があります: {missing_dates[0]}",
+                        )
+                    )
+            if not rule.enabled or rule.class_id not in classes:
+                continue
+            enabled_rules_by_class[rule.class_id].append(rule)
+            class_model = classes[rule.class_id]
+            if not class_model.enabled:
+                issues.append(
+                    self._issue(
+                        "DISABLED_MASTER_REFERENCE",
+                        rule.rule_id,
+                        "有効な担任授業期間ルールが無効クラスを参照しています",
+                    )
+                )
+            teacher_id = class_model.homeroom_teacher_id
+            if teacher_id is None:
+                issues.append(
+                    self._issue(
+                        "HOMEROOM_TEACHER_REQUIRED",
+                        rule.rule_id,
+                        "対象クラスにhomeroom_teacher_idが設定されていません",
+                    )
+                )
+                continue
+            teacher = teachers.get(teacher_id)
+            if teacher is None:
+                continue
+            if not teacher.enabled:
+                issues.append(
+                    self._issue(
+                        "DISABLED_MASTER_REFERENCE",
+                        rule.rule_id,
+                        "対象クラスの担任教師が無効です",
+                    )
+                )
+            if not any(
+                requirement.class_id == rule.class_id and requirement.teacher_id == teacher_id
+                for requirement in active_requirements
+            ):
+                issues.append(
+                    self._issue(
+                        "HOMEROOM_LESSON_REQUIREMENT_REQUIRED",
+                        rule.rule_id,
+                        (
+                            "対象クラスと担任教師に一致する有効な授業要求がありません: "
+                            f"class_id={rule.class_id}, teacher_id={teacher_id}"
+                        ),
+                    )
+                )
+
+        for class_id, rules in enabled_rules_by_class.items():
+            ordered = sorted(rules, key=lambda item: (item.start_date, item.end_date, item.rule_id))
+            for left, right in pairwise(ordered):
+                if right.start_date <= left.end_date:
+                    issues.append(
+                        self._issue(
+                            "HOMEROOM_BOUNDARY_RANGE_OVERLAP",
+                            f"{left.rule_id}/{right.rule_id}",
+                            f"同一クラスの期間が重複しています: class_id={class_id}",
+                        )
+                    )
 
     def _require_reference(
         self,
@@ -954,6 +1059,53 @@ class CapacityFeasibilityValidator:
                         (
                             "範囲外へ配置すべきコマ数に対して候補枠が不足しています: "
                             f"required_outside={required_outside}, slots={outside_count}"
+                        ),
+                    )
+                )
+        rules_by_class: dict[str, list[ResolvedHomeroomBoundaryRuleModel]] = defaultdict(list)
+        for rule in resolved_rules.homeroom_boundary_rules:
+            rules_by_class[rule.class_id].append(rule)
+            scoped_candidates = [
+                candidate
+                for candidate in candidate_result.candidates
+                if candidate.class_id == rule.class_id
+                and rule.start_date <= candidate.target_date <= rule.end_date
+            ]
+            if not scoped_candidates:
+                issues.append(
+                    ValidationIssueModel(
+                        "HOMEROOM_BOUNDARY_SCOPE_SUPPLY_SHORTAGE",
+                        "ERROR",
+                        rule.rule_id,
+                        "期間内に対象クラスの配置候補がありません",
+                    )
+                )
+                continue
+            if not any(candidate.teacher_id == rule.teacher_id for candidate in scoped_candidates):
+                issues.append(
+                    ValidationIssueModel(
+                        "HOMEROOM_BOUNDARY_TEACHER_SUPPLY_SHORTAGE",
+                        "ERROR",
+                        rule.rule_id,
+                        "期間内に担任教師が担当する授業候補がありません",
+                    )
+                )
+        for class_id, rules in rules_by_class.items():
+            teacher_id = rules[0].teacher_id
+            required_homeroom_periods = sum(
+                requirement.required_periods
+                for requirement in active_requirements
+                if requirement.class_id == class_id and requirement.teacher_id == teacher_id
+            )
+            if required_homeroom_periods < len(rules):
+                issues.append(
+                    ValidationIssueModel(
+                        "HOMEROOM_BOUNDARY_REQUIRED_PERIODS_SHORTAGE",
+                        "ERROR",
+                        class_id,
+                        (
+                            "担任授業期間数に対して担任授業の必要コマ数が不足しています: "
+                            f"intervals={len(rules)}, required={required_homeroom_periods}"
                         ),
                     )
                 )

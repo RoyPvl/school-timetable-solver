@@ -11,6 +11,7 @@ from school_timetable_solver.constraint.hard_constraints import (
     ClassOverlapConstraint,
     ClassRoomContinuityConstraint,
     ConsecutiveAttendanceConstraint,
+    HomeroomBoundaryConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
     TeacherOverlapConstraint,
@@ -19,6 +20,7 @@ from school_timetable_solver.constraint.hard_constraints import (
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountRuleModel,
 )
 
@@ -160,6 +162,110 @@ def test_h17_lesson_count_in_scope_requires_exact_count() -> None:
     solver = cp_model.CpSolver()
 
     assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+
+
+def test_h18_homeroom_boundary_allows_later_start_and_requires_both_edges() -> None:
+    candidates = (
+        _candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),
+        _candidate("QN__1", "T1", DAY_ONE, "C1", "P3", "CL2"),
+        _candidate("QH__2", "T2", DAY_TWO, "C1", "P1", "CL2"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
+
+
+def test_h18_homeroom_boundary_rejects_non_homeroom_first_lesson() -> None:
+    candidates = (
+        _candidate("QN__1", "T1", DAY_ONE, "C1", "P1", "CL2"),
+        _candidate("QH__1", "T2", DAY_TWO, "C1", "P1", "CL2"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h18_homeroom_boundary_allows_one_homeroom_lesson_in_interval() -> None:
+    candidates = (_candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),)
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
+
+
+def test_h18_homeroom_boundary_uses_first_and_last_homeroom_available_dates() -> None:
+    candidates = (
+        _candidate("QH__1", "T2", DAY_ONE, "C1", "P2", "CL2"),
+        _candidate("QH__2", "T2", DAY_TWO, "C1", "P2", "CL2"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL2",
+            "T2",
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+    context.model.add(context.assignment_variables["QH__1"] == 0)
+    context.model.add(context.assignment_variables["QH__2"] == 1)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+
+
+def test_h18_homeroom_boundary_staggers_classes_with_same_teacher() -> None:
+    candidates = (
+        _candidate("QA__1", "T2", DAY_ONE, "C1", "P1", "CLA"),
+        _candidate("QA__2", "T2", DAY_TWO, "C1", "P1", "CLA"),
+        _candidate("QB__1", "T2", DAY_ONE, "C1", "P1", "CLB"),
+        _candidate("QB__2", "T2", DAY_TWO, "C1", "P2", "CLB"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel("HBA", "CLA", "T2", DAY_ONE, DAY_TWO),
+        ResolvedHomeroomBoundaryRuleModel("HBB", "CLB", "T2", DAY_ONE, DAY_TWO),
+    )
+    HomeroomBoundaryConstraint().apply(context)
+    TeacherOverlapConstraint().apply(context)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) in {"OPTIMAL", "FEASIBLE"}
+    assert solver.value(context.assignment_variables["QA__1"]) == 1
+    assert solver.value(context.assignment_variables["QA__2"]) == 1
+    assert solver.value(context.assignment_variables["QB__1"]) == 0
+    assert solver.value(context.assignment_variables["QB__2"]) == 1
 
 
 def test_class_overlap_constraint_rejects_same_class_slot() -> None:

@@ -5,7 +5,10 @@ from collections import Counter, defaultdict
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.constraint.hard_constraints import HardConstraint
+from school_timetable_solver.constraint.hard_constraints import (
+    HardConstraint,
+    HomeroomBoundaryConstraint,
+)
 from school_timetable_solver.constraint.soft_constraints import SoftConstraint
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import InputDataModel
@@ -16,6 +19,7 @@ from school_timetable_solver.model.result_models import (
 )
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedRuleSetModel,
     SolverStatisticsModel,
 )
@@ -27,7 +31,11 @@ class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
     _LOWER_PRIORITY_TOTAL_RESERVE_RATIO = 0.75
+    _HOMEROOM_INITIAL_FEASIBILITY_RATIO = 0.75
+    _HOMEROOM_STAGE_MIN_SECONDS = 600.0
+    _HOMEROOM_STAGE_MAX_ATTEMPTS = 3
     _PRELIMINARY_DEFERRED_HARD_RULE_IDS = frozenset({"H16"})
+    _HOMEROOM_PRELIMINARY_DEFERRED_HARD_RULE_IDS = frozenset({"H18"})
 
     def __init__(
         self,
@@ -179,6 +187,7 @@ class TimetableSolverService:
             },
             lesson_count_rules=resolved_rules.lesson_count_rules,
             lesson_count_preference_rules=resolved_rules.lesson_count_preference_rules,
+            homeroom_boundary_rules=resolved_rules.homeroom_boundary_rules,
         )
         return context, variables
 
@@ -190,13 +199,22 @@ class TimetableSolverService:
         soft_constraints_by_priority: dict[int, list[SoftConstraint]],
         priorities: list[int],
     ) -> tuple[cp_model.CpSolver | None, str, float]:
+        preliminary_deferred_rule_ids = (
+            self._HOMEROOM_PRELIMINARY_DEFERRED_HARD_RULE_IDS
+            if context.homeroom_boundary_rules
+            else self._PRELIMINARY_DEFERRED_HARD_RULE_IDS
+        )
         deferred_hard_constraints = [
             (index, constraint)
             for index, constraint in enumerate(self._hard_constraints)
-            if constraint.rule_id in self._PRELIMINARY_DEFERRED_HARD_RULE_IDS
+            if constraint.rule_id in preliminary_deferred_rule_ids
         ]
+        if context.homeroom_boundary_rules:
+            for constraint in self._hard_constraints:
+                if isinstance(constraint, HomeroomBoundaryConstraint):
+                    constraint.apply_boundary_anchors(context)
         for constraint in self._hard_constraints:
-            if constraint.rule_id not in self._PRELIMINARY_DEFERRED_HARD_RULE_IDS:
+            if constraint.rule_id not in preliminary_deferred_rule_ids:
                 constraint.apply(context)
 
         assignment_priorities = {
@@ -212,6 +230,11 @@ class TimetableSolverService:
             len(priorities) - 1,
             lower_priority_reserve_ratio,
         )
+        if context.homeroom_boundary_rules:
+            first_phase_seconds = max(
+                first_phase_seconds,
+                request.max_solve_seconds * self._HOMEROOM_INITIAL_FEASIBILITY_RATIO,
+            )
         preliminary_solver: cp_model.CpSolver | None = None
         preliminary_status = "SKIPPED"
         preliminary_variable_count = 0
@@ -244,36 +267,59 @@ class TimetableSolverService:
                 preliminary_solver.wall_time,
             )
 
-        for rule_index, constraint in deferred_hard_constraints:
-            constraint.apply(context)
-            applied_rule_id = context.applied_rule_ids.pop()
-            context.applied_rule_ids.insert(rule_index, applied_rule_id)
-        if preliminary_solver is not None and preliminary_status in {"OPTIMAL", "FEASIBLE"}:
-            for variable_index in range(preliminary_variable_count):
-                variable = context.model.get_int_var_from_proto_index(variable_index)
-                context.model.add_hint(variable, preliminary_solver.value(variable))
-
-        initial_feasibility_seconds = max(
-            first_phase_seconds - total_wall_time,
-            0.001,
-        )
-        LOGGER.info(
-            "Solverフェーズ開始 phase=initial_feasibility max_seconds=%f hints=%d",
-            initial_feasibility_seconds,
-            len(context.model.proto.solution_hint.vars),
-        )
-        initial_solver = self._new_solver(request, initial_feasibility_seconds)
-        initial_status = initial_solver.status_name(initial_solver.solve(context.model))
-        total_wall_time += initial_solver.wall_time
-        LOGGER.info(
+        staged_homeroom_constraint = next(
             (
-                "Solverフェーズ終了 phase=initial_feasibility "
-                "status=%s wall_time=%f total_wall_time=%f"
+                deferred_constraint
+                for deferred_constraint in deferred_hard_constraints
+                if deferred_constraint[1].rule_id == "H18"
             ),
-            initial_status,
-            initial_solver.wall_time,
-            total_wall_time,
+            None,
         )
+        if staged_homeroom_constraint is not None and context.homeroom_boundary_rules:
+            initial_solver, initial_status, total_wall_time = self._solve_homeroom_stages(
+                request,
+                context,
+                staged_homeroom_constraint,
+                preliminary_solver,
+                preliminary_status,
+                preliminary_variable_count,
+                first_phase_seconds,
+                total_wall_time,
+            )
+        else:
+            for rule_index, constraint in deferred_hard_constraints:
+                constraint.apply(context)
+                applied_rule_id = context.applied_rule_ids.pop()
+                context.applied_rule_ids.insert(rule_index, applied_rule_id)
+            if preliminary_solver is not None and preliminary_status in {
+                "OPTIMAL",
+                "FEASIBLE",
+            }:
+                for variable_index in range(preliminary_variable_count):
+                    variable = context.model.get_int_var_from_proto_index(variable_index)
+                    context.model.add_hint(variable, preliminary_solver.value(variable))
+
+            initial_feasibility_seconds = max(
+                first_phase_seconds - total_wall_time,
+                0.001,
+            )
+            LOGGER.info(
+                "Solverフェーズ開始 phase=initial_feasibility max_seconds=%f hints=%d",
+                initial_feasibility_seconds,
+                len(context.model.proto.solution_hint.vars),
+            )
+            initial_solver = self._new_solver(request, initial_feasibility_seconds)
+            initial_status = initial_solver.status_name(initial_solver.solve(context.model))
+            total_wall_time += initial_solver.wall_time
+            LOGGER.info(
+                (
+                    "Solverフェーズ終了 phase=initial_feasibility "
+                    "status=%s wall_time=%f total_wall_time=%f"
+                ),
+                initial_status,
+                initial_solver.wall_time,
+                total_wall_time,
+            )
 
         hint_solver = initial_solver if initial_status in {"OPTIMAL", "FEASIBLE"} else None
         solved_variable_count = len(context.model.proto.variables) if hint_solver is not None else 0
@@ -357,6 +403,132 @@ class TimetableSolverService:
             status = "FEASIBLE"
         return solver, status, total_wall_time
 
+    def _solve_homeroom_stages(
+        self,
+        request: GenerationRequestModel,
+        context: SolverContext,
+        staged_constraint: tuple[int, HardConstraint],
+        preliminary_solver: cp_model.CpSolver | None,
+        preliminary_status: str,
+        preliminary_variable_count: int,
+        first_phase_seconds: float,
+        total_wall_time: float,
+    ) -> tuple[cp_model.CpSolver | None, str, float]:
+        rule_index, constraint = staged_constraint
+        full_rules = context.homeroom_boundary_rules
+        class_candidate_counts = Counter(candidate.class_id for candidate in context.candidates)
+        batches = self._homeroom_rule_batches(full_rules, class_candidate_counts)
+        hint_solver = preliminary_solver if preliminary_status in {"OPTIMAL", "FEASIBLE"} else None
+        hinted_variable_count = preliminary_variable_count if hint_solver is not None else 0
+        stage_solver: cp_model.CpSolver | None = None
+        stage_status = "UNKNOWN"
+
+        for batch_index, batch in enumerate(batches):
+            context.homeroom_boundary_rules = batch
+            constraint.apply(context)
+            context.applied_rule_ids.pop()
+            class_ids = tuple(dict.fromkeys(rule.class_id for rule in batch))
+            context.model.clear_hints()
+            if hint_solver is not None:
+                for variable_index in range(hinted_variable_count):
+                    variable = context.model.get_int_var_from_proto_index(variable_index)
+                    context.model.add_hint(variable, hint_solver.value(variable))
+
+            remaining_batch_count = len(batches) - batch_index
+            remaining_first_phase_seconds = max(
+                first_phase_seconds - total_wall_time,
+                0.001,
+            )
+            stage_seconds = max(
+                remaining_first_phase_seconds / remaining_batch_count,
+                min(
+                    self._HOMEROOM_STAGE_MIN_SECONDS,
+                    remaining_first_phase_seconds,
+                ),
+            )
+            stage_variable_count = len(context.model.proto.variables)
+            for attempt_index in range(self._HOMEROOM_STAGE_MAX_ATTEMPTS):
+                available_seconds = max(first_phase_seconds - total_wall_time, 0.001)
+                attempt_seconds = min(stage_seconds, available_seconds)
+                attempt_seed = (
+                    request.random_seed
+                    + batch_index * self._HOMEROOM_STAGE_MAX_ATTEMPTS
+                    + attempt_index
+                )
+                LOGGER.info(
+                    (
+                        "Solverフェーズ開始 phase=homeroom_feasibility "
+                        "batch=%d/%d attempt=%d/%d class_ids=%s "
+                        "random_seed=%d max_seconds=%f hints=%d"
+                    ),
+                    batch_index + 1,
+                    len(batches),
+                    attempt_index + 1,
+                    self._HOMEROOM_STAGE_MAX_ATTEMPTS,
+                    ",".join(class_ids),
+                    attempt_seed,
+                    attempt_seconds,
+                    len(context.model.proto.solution_hint.vars),
+                )
+                stage_solver = self._new_solver(
+                    request,
+                    attempt_seconds,
+                    random_seed=attempt_seed,
+                )
+                stage_status = stage_solver.status_name(stage_solver.solve(context.model))
+                total_wall_time += stage_solver.wall_time
+                LOGGER.info(
+                    (
+                        "Solverフェーズ終了 phase=homeroom_feasibility "
+                        "batch=%d/%d attempt=%d/%d status=%s "
+                        "wall_time=%f total_wall_time=%f"
+                    ),
+                    batch_index + 1,
+                    len(batches),
+                    attempt_index + 1,
+                    self._HOMEROOM_STAGE_MAX_ATTEMPTS,
+                    stage_status,
+                    stage_solver.wall_time,
+                    total_wall_time,
+                )
+                if stage_status in {"OPTIMAL", "FEASIBLE"}:
+                    break
+                if total_wall_time >= first_phase_seconds:
+                    break
+            if stage_status not in {"OPTIMAL", "FEASIBLE"}:
+                for remaining_batch in batches[batch_index + 1 :]:
+                    context.homeroom_boundary_rules = remaining_batch
+                    constraint.apply(context)
+                    context.applied_rule_ids.pop()
+                break
+            hint_solver = stage_solver
+            hinted_variable_count = stage_variable_count
+
+        context.homeroom_boundary_rules = full_rules
+        context.applied_rule_ids.insert(rule_index, constraint.rule_id)
+        return stage_solver, stage_status, total_wall_time
+
+    def _homeroom_rule_batches(
+        self,
+        rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...],
+        class_candidate_counts: Counter[str] | None = None,
+    ) -> tuple[tuple[ResolvedHomeroomBoundaryRuleModel, ...], ...]:
+        rules_by_teacher: dict[str, list[ResolvedHomeroomBoundaryRuleModel]] = {}
+        for rule in rules:
+            rules_by_teacher.setdefault(rule.teacher_id, []).append(rule)
+        candidate_counts = class_candidate_counts or Counter()
+        teacher_rule_groups = sorted(
+            rules_by_teacher.values(),
+            key=lambda teacher_rules: (
+                -sum(
+                    candidate_counts[class_id]
+                    for class_id in {rule.class_id for rule in teacher_rules}
+                ),
+                teacher_rules[0].teacher_id,
+            ),
+        )
+        return tuple(tuple(teacher_rules) for teacher_rules in teacher_rule_groups)
+
     def _priority_phase_seconds(
         self,
         total_seconds: float,
@@ -384,9 +556,10 @@ class TimetableSolverService:
         self,
         request: GenerationRequestModel,
         max_solve_seconds: float,
+        random_seed: int | None = None,
     ) -> cp_model.CpSolver:
         solver = cp_model.CpSolver()
         solver.parameters.num_search_workers = request.num_search_workers
-        solver.parameters.random_seed = request.random_seed
+        solver.parameters.random_seed = request.random_seed if random_seed is None else random_seed
         solver.parameters.max_time_in_seconds = max_solve_seconds
         return solver

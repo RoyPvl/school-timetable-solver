@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 from school_timetable_solver.model.input_models import (
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
@@ -57,6 +58,28 @@ def test_rule_resolver_supports_class_attributes_teacher_id_campus_date_weekday_
 
     assert "R_JH_OVERRIDE" in override.applied_rule_ids
     assert "R_TEACHER_BASE" in teacher.applied_rule_ids
+
+
+def test_rule_resolver_derives_homeroom_teacher_from_class(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HB1",
+                "前半",
+                True,
+                "CL2",
+                date(2026, 7, 27),
+                date(2026, 7, 28),
+            ),
+        ),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert resolved.homeroom_boundary_rules[0].teacher_id == "T2"
 
 
 def test_rule_resolver_reports_same_priority_conflict_and_missing_values(

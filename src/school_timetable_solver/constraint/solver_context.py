@@ -7,6 +7,7 @@ from ortools.sat.python import cp_model
 
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
 )
@@ -33,6 +34,7 @@ class SolverContext:
     )
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
+    homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
     class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
