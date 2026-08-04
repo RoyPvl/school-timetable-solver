@@ -57,8 +57,15 @@ class ScheduledLessonDraftModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduledTeacherDayOffModel:
+    teacher_id: str
+    target_date: date
+
+
+@dataclass(frozen=True, slots=True)
 class SolverResultModel:
     lessons: tuple[ScheduledLessonDraftModel, ...]
+    teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...]
     statistics: SolverStatisticsModel
 
 

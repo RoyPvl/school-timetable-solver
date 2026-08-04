@@ -7,6 +7,7 @@ from school_timetable_solver.model.input_models import (
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    TeacherDayOffRuleModel,
     TeacherLeaveModel,
 )
 from school_timetable_solver.service.planning_services import (
@@ -115,6 +116,44 @@ def test_validator_detects_requirement_and_teacher_leave_duplicates(
         "DUPLICATE_CLASS_SUBJECT_REQUIREMENT",
         "DUPLICATE_TEACHER_LEAVE",
         "DUPLICATE_TEACHER_LEAVE_PERIOD",
+    } <= rule_ids
+
+
+def test_validator_rejects_fixed_and_flexible_leave_for_same_teacher(
+    minimal_input_data: InputDataModel,
+) -> None:
+    target_date = minimal_input_data.calendar_days[0].target_date
+    invalid = replace(
+        minimal_input_data,
+        teacher_leaves=(TeacherLeaveModel("T1", target_date, ("P1",)),),
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert "TEACHER_LEAVE_MODE_CONFLICT" in rule_ids
+
+
+def test_validator_rejects_overlapping_or_undersupplied_day_off_ranges(
+    minimal_input_data: InputDataModel,
+) -> None:
+    first_date = minimal_input_data.calendar_days[0].target_date
+    second_date = minimal_input_data.calendar_days[1].target_date
+    invalid = replace(
+        minimal_input_data,
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel("DAY_OFF_T1_A", "T1", True, first_date, second_date, 3),
+            TeacherDayOffRuleModel("DAY_OFF_T1_B", "T1", True, second_date, second_date, 1),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {
+        "TEACHER_DAY_OFF_CAPACITY_SHORTAGE",
+        "OVERLAPPING_TEACHER_DAY_OFF_RULES",
     } <= rule_ids
 
 

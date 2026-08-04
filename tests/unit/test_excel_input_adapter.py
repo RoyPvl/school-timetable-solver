@@ -151,6 +151,31 @@ def test_reader_reads_lesson_count_preference_rule_segments(tmp_path: Path) -> N
     assert segment.target_period_ids == ("P3",)
 
 
+def test_reader_reads_teacher_day_off_rules(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["15_教師休日日数ルール"].append(
+        (
+            "DAY_OFF_T1_EARLY",
+            "T1",
+            True,
+            date(2026, 7, 27),
+            date(2026, 7, 29),
+            1,
+            "期間内に終日休み1日",
+        )
+    )
+    target = tmp_path / "teacher-day-off-rules.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    rule = result.input_data.teacher_day_off_rules[0]
+    assert rule.rule_id == "DAY_OFF_T1_EARLY"
+    assert rule.teacher_id == "T1"
+    assert rule.required_days_off == 1
+
+
 def test_operation_sheet_needs_no_header_and_preference_rows_are_ignored(
     tmp_path: Path,
 ) -> None:

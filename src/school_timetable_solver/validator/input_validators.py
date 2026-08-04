@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterable
 from datetime import date, timedelta
+from itertools import pairwise
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    TeacherDayOffRuleModel,
 )
 from school_timetable_solver.model.result_models import ValidationIssueModel
 from school_timetable_solver.model.solver_models import (
@@ -27,6 +29,7 @@ class ReferenceIntegrityValidator:
         self._validate_rules(input_data, issues)
         self._validate_lesson_count_rules(input_data, issues)
         self._validate_lesson_count_preference_rules(input_data, issues)
+        self._validate_teacher_day_off_rules(input_data, issues)
         return issues
 
     def _validate_uniqueness(
@@ -53,6 +56,10 @@ class ReferenceIntegrityValidator:
             (
                 "lesson_count_preference_segment_id",
                 (item.segment_id for item in input_data.lesson_count_preference_rule_segments),
+            ),
+            (
+                "teacher_day_off_rule_id",
+                (item.rule_id for item in input_data.teacher_day_off_rules),
             ),
         )
         for label, identifiers in id_groups:
@@ -218,6 +225,23 @@ class ReferenceIntegrityValidator:
                         "preferred_periodsは0以上が必要です",
                     )
                 )
+        for rule in input_data.teacher_day_off_rules:
+            if rule.start_date > rule.end_date:
+                issues.append(
+                    self._issue(
+                        "INVALID_TEACHER_DAY_OFF_DATE_RANGE",
+                        rule.rule_id,
+                        "start_dateはend_date以前である必要があります",
+                    )
+                )
+            if rule.required_days_off < 0:
+                issues.append(
+                    self._issue(
+                        "INVALID_TEACHER_DAY_OFF_COUNT",
+                        rule.rule_id,
+                        "required_days_offは0以上が必要です",
+                    )
+                )
 
     def _validate_references(
         self,
@@ -344,6 +368,31 @@ class ReferenceIntegrityValidator:
                         "DISABLED_MASTER_REFERENCE",
                         target,
                         "教師休みが無効教師を参照しています",
+                    )
+                )
+        for rule in input_data.teacher_day_off_rules:
+            self._require_reference(
+                issues,
+                rule.rule_id,
+                "teacher_id",
+                rule.teacher_id,
+                teachers,
+            )
+            teacher = teachers.get(rule.teacher_id)
+            if rule.enabled and teacher is not None and not teacher.enabled:
+                issues.append(
+                    self._issue(
+                        "DISABLED_MASTER_REFERENCE",
+                        rule.rule_id,
+                        "有効な教師休日日数ルールが無効教師を参照しています",
+                    )
+                )
+            if rule.start_date not in calendar_dates or rule.end_date not in calendar_dates:
+                issues.append(
+                    self._issue(
+                        "UNKNOWN_REFERENCE",
+                        rule.rule_id,
+                        "教師休日日数ルールの開始日・終了日は開講カレンダーに必要です",
                     )
                 )
 
@@ -821,6 +870,59 @@ class ReferenceIntegrityValidator:
                         ),
                     )
                 )
+
+    def _validate_teacher_day_off_rules(
+        self,
+        input_data: InputDataModel,
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        output_dates = {day.target_date for day in input_data.calendar_days if day.output_enabled}
+        enabled_rules = tuple(rule for rule in input_data.teacher_day_off_rules if rule.enabled)
+        fixed_teacher_ids = {leave.teacher_id for leave in input_data.teacher_leaves}
+        flexible_teacher_ids = {rule.teacher_id for rule in enabled_rules}
+        for teacher_id in sorted(fixed_teacher_ids & flexible_teacher_ids):
+            issues.append(
+                self._issue(
+                    "TEACHER_LEAVE_MODE_CONFLICT",
+                    teacher_id,
+                    "同じ教師を固定休みと休日日数ルールの両方へ登録できません",
+                )
+            )
+
+        rules_by_teacher: dict[str, list[TeacherDayOffRuleModel]] = defaultdict(list)
+        for rule in enabled_rules:
+            eligible_dates = {
+                target_date
+                for target_date in output_dates
+                if rule.start_date <= target_date <= rule.end_date
+            }
+            if rule.required_days_off > len(eligible_dates):
+                issues.append(
+                    self._issue(
+                        "TEACHER_DAY_OFF_CAPACITY_SHORTAGE",
+                        rule.rule_id,
+                        (
+                            "期間内の出力対象日数がrequired_days_off未満です: "
+                            f"required={rule.required_days_off}, available={len(eligible_dates)}"
+                        ),
+                    )
+                )
+            rules_by_teacher[rule.teacher_id].append(rule)
+
+        for teacher_id, teacher_rules in rules_by_teacher.items():
+            ordered_rules = sorted(teacher_rules, key=lambda item: (item.start_date, item.end_date))
+            for previous, current in pairwise(ordered_rules):
+                if current.start_date <= previous.end_date:
+                    issues.append(
+                        self._issue(
+                            "OVERLAPPING_TEACHER_DAY_OFF_RULES",
+                            teacher_id,
+                            (
+                                "同一教師の休日日数ルール期間が重複しています: "
+                                f"{previous.rule_id}/{current.rule_id}"
+                            ),
+                        )
+                    )
 
     def _require_reference(
         self,

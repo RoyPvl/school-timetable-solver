@@ -53,6 +53,16 @@ class TeacherLeaveModel:
 
 
 @dataclass(frozen=True, slots=True)
+class TeacherDayOffRuleModel:
+    rule_id: str
+    teacher_id: str
+    enabled: bool
+    start_date: date
+    end_date: date
+    required_days_off: int
+
+
+@dataclass(frozen=True, slots=True)
 class PlacementRuleModel:
     rule_id: str
     rule_name: str
@@ -120,3 +130,4 @@ class InputDataModel:
         LessonCountPreferenceRuleSegmentModel,
         ...,
     ] = ()
+    teacher_day_off_rules: tuple[TeacherDayOffRuleModel, ...] = ()

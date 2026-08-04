@@ -5,6 +5,7 @@ from datetime import date
 
 from ortools.sat.python import cp_model
 
+from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     ResolvedLessonCountPreferenceRuleModel,
@@ -47,3 +48,7 @@ class SolverContext:
         int,
         dict[tuple[str, ...], list[cp_model.IntVar]],
     ] = field(default_factory=dict)
+    teacher_day_off_rules: tuple[TeacherDayOffRuleModel, ...] = ()
+    teacher_day_off_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
+    teacher_home_campuses: dict[str, str] = field(default_factory=dict)
+    fixed_teacher_leave_cell_counts: dict[tuple[str, date], int] = field(default_factory=dict)

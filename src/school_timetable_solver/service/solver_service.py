@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from datetime import date
 
 from ortools.sat.python import cp_model
 
@@ -12,6 +13,7 @@ from school_timetable_solver.model.input_models import InputDataModel
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
     ScheduledLessonDraftModel,
+    ScheduledTeacherDayOffModel,
     SolverResultModel,
 )
 from school_timetable_solver.model.solver_models import (
@@ -110,8 +112,17 @@ class TimetableSolverService:
                 item.requirement_id,
             )
         )
+        teacher_day_offs: list[ScheduledTeacherDayOffModel] = []
+        if solver is not None and status in {"OPTIMAL", "FEASIBLE"}:
+            teacher_day_offs = [
+                ScheduledTeacherDayOffModel(teacher_id, target_date)
+                for (teacher_id, target_date), variable in context.teacher_day_off_variables.items()
+                if solver.value(variable)
+            ]
+            teacher_day_offs.sort(key=lambda item: (item.target_date, item.teacher_id))
         return SolverResultModel(
             lessons=tuple(lessons),
+            teacher_day_offs=tuple(teacher_day_offs),
             statistics=SolverStatisticsModel(
                 status=status,
                 wall_time_seconds=total_wall_time,
@@ -132,6 +143,17 @@ class TimetableSolverService:
             for candidate in candidate_result.candidates
         }
         enabled_campus_ids = {campus.campus_id for campus in input_data.campuses if campus.enabled}
+        period_ids = {period.period_id for period in input_data.periods}
+        teacher_home_campuses = {
+            teacher.teacher_id: teacher.home_campus_id
+            for teacher in input_data.teachers
+            if teacher.enabled
+        }
+        fixed_teacher_leave_cell_counts: Counter[tuple[str, date]] = Counter()
+        for leave in input_data.teacher_leaves:
+            campus_id = teacher_home_campuses[leave.teacher_id]
+            required_cells = 1 if set(leave.unavailable_period_ids) == period_ids else 2
+            fixed_teacher_leave_cell_counts[(campus_id, leave.target_date)] += required_cells
         context = SolverContext(
             model=model,
             candidates=candidate_result.candidates,
@@ -178,6 +200,9 @@ class TimetableSolverService:
                 for rule in resolved_rules.class_date_rules
             },
             lesson_count_rules=resolved_rules.lesson_count_rules,
+            teacher_day_off_rules=input_data.teacher_day_off_rules,
+            teacher_home_campuses=teacher_home_campuses,
+            fixed_teacher_leave_cell_counts=dict(fixed_teacher_leave_cell_counts),
             lesson_count_preference_rules=resolved_rules.lesson_count_preference_rules,
         )
         return context, variables

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
-from itertools import combinations, pairwise
+from itertools import combinations, pairwise, product
 
 from ortools.sat.python import cp_model
 
@@ -302,7 +302,7 @@ class TeacherDailyLimitConstraint:
 
 
 class TeacherConsecutivePeriodConstraint:
-    """H09: enforce each teacher's maximum consecutive period count."""
+    """H09: restrict the occupied period pattern at the configured limit."""
 
     rule_id = "H09"
 
@@ -316,17 +316,50 @@ class TeacherConsecutivePeriodConstraint:
             period_id
             for period_id, _ in sorted(context.period_orders.items(), key=lambda item: item[1])
         ]
+        allowed_patterns_by_limit: dict[int, tuple[tuple[int, ...], ...]] = {}
         for teacher_id, target_date in {(key[0], key[1]) for key in groups}:
             limit = context.teacher_consecutive_limits[(teacher_id, target_date)]
             if limit is None or limit >= len(ordered_periods):
                 continue
-            for start in range(len(ordered_periods) - limit):
-                variables = [
-                    variable
-                    for period_id in ordered_periods[start : start + limit + 1]
-                    for variable in groups.get((teacher_id, target_date, period_id), ())
-                ]
-                context.model.add(sum(variables) <= limit)
+            period_variables = [
+                sum(groups.get((teacher_id, target_date, period_id), ()))
+                for period_id in ordered_periods
+            ]
+            if limit == len(ordered_periods) - 1:
+                total_presence = sum(period_variables)
+                context.model.add(total_presence <= limit)
+                for middle_period in period_variables[1:-1]:
+                    context.model.add(total_presence - middle_period <= limit - 1)
+                continue
+            presence_variables: list[cp_model.IntVar] = []
+            for period_id in ordered_periods:
+                variables = groups.get((teacher_id, target_date, period_id), ())
+                presence = context.model.new_bool_var(
+                    f"teacher_period_presence__{teacher_id}__{target_date.isoformat()}__{period_id}"
+                )
+                if variables:
+                    context.model.add_max_equality(presence, variables)
+                else:
+                    context.model.add(presence == 0)
+                presence_variables.append(presence)
+            allowed_patterns = allowed_patterns_by_limit.get(limit)
+            if allowed_patterns is None:
+                allowed_patterns = tuple(
+                    pattern
+                    for pattern in product((0, 1), repeat=len(ordered_periods))
+                    if sum(pattern) < limit
+                    or (
+                        sum(pattern) == limit
+                        and any(
+                            pattern[start : start + limit] == (1,) * limit
+                            and not any(pattern[:start])
+                            and not any(pattern[start + limit :])
+                            for start in range(len(ordered_periods) - limit + 1)
+                        )
+                    )
+                )
+                allowed_patterns_by_limit[limit] = allowed_patterns
+            context.model.add_allowed_assignments(presence_variables, allowed_patterns)
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -392,6 +425,64 @@ class TeacherSingleCampusPerDayConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class TeacherDayOffQuotaConstraint:
+    """H18: select the exact number of full teacher days off in each input range."""
+
+    rule_id = "H18"
+
+    def apply(self, context: SolverContext) -> None:
+        assignments_by_teacher_day: dict[
+            tuple[str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            assignments_by_teacher_day[(candidate.teacher_id, candidate.target_date)].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+
+        for rule in context.teacher_day_off_rules:
+            if not rule.enabled:
+                continue
+            rule_variables: list[cp_model.IntVar] = []
+            for target_date in context.calendar_dates:
+                if not rule.start_date <= target_date <= rule.end_date:
+                    continue
+                key = (rule.teacher_id, target_date)
+                day_off = context.teacher_day_off_variables.get(key)
+                if day_off is None:
+                    day_off = context.model.new_bool_var(
+                        f"teacher_day_off__{rule.teacher_id}__{target_date.isoformat()}"
+                    )
+                    context.teacher_day_off_variables[key] = day_off
+                    assignments = assignments_by_teacher_day.get(key, ())
+                    if assignments:
+                        context.model.add(sum(assignments) == 0).only_enforce_if(day_off)
+                rule_variables.append(day_off)
+            context.model.add(sum(rule_variables) == rule.required_days_off)
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class TeacherLeaveAnnotationCapacityConstraint:
+    """H19: keep fixed and selected leave annotations within campus room columns."""
+
+    rule_id = "H19"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_campus_day: dict[
+            tuple[str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for (teacher_id, target_date), variable in context.teacher_day_off_variables.items():
+            variables_by_campus_day[
+                (context.teacher_home_campuses[teacher_id], target_date)
+            ].append(variable)
+        for key, variables in variables_by_campus_day.items():
+            campus_id, _ = key
+            fixed_cells = context.fixed_teacher_leave_cell_counts.get(key, 0)
+            context.model.add(sum(variables) + fixed_cells <= context.room_capacities[campus_id])
+        context.applied_rule_ids.append(self.rule_id)
+
+
 DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
     LessonCountInScopeConstraint(),
@@ -405,6 +496,8 @@ DEFAULT_HARD_CONSTRAINTS = (
     TeacherConsecutivePeriodConstraint(),
     ConsecutiveAttendanceConstraint(),
     TeacherSingleCampusPerDayConstraint(),
+    TeacherDayOffQuotaConstraint(),
+    TeacherLeaveAnnotationCapacityConstraint(),
 )
 
 HardConstraint = (
@@ -420,4 +513,6 @@ HardConstraint = (
     | TeacherConsecutivePeriodConstraint
     | ConsecutiveAttendanceConstraint
     | TeacherSingleCampusPerDayConstraint
+    | TeacherDayOffQuotaConstraint
+    | TeacherLeaveAnnotationCapacityConstraint
 )

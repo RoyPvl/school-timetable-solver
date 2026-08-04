@@ -215,6 +215,7 @@ class GenerateTimetableService:
             resolved_rules,
             lessons,
             candidates,
+            solver_result.teacher_day_offs,
         )
         issues.extend(validation_report.issues)
         if self._has_errors(issues):
@@ -228,7 +229,11 @@ class GenerateTimetableService:
                 solver_result.statistics,
             )
         try:
-            document = self._document_builder.execute(input_data, lessons)
+            document = self._document_builder.execute(
+                input_data,
+                lessons,
+                solver_result.teacher_day_offs,
+            )
         except ValueError as exc:
             issues.append(
                 ValidationIssueModel(

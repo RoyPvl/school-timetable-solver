@@ -9,11 +9,13 @@ from school_timetable_solver.model.input_models import (
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    TeacherDayOffRuleModel,
     TeacherLeaveModel,
 )
 from school_timetable_solver.model.result_models import (
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
+    ScheduledTeacherDayOffModel,
 )
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
@@ -102,6 +104,40 @@ def test_validate_result_reports_output_date_teacher_leave_allowed_period_and_ca
     assert {"H04", "H05", "H06", "H11", "H13", "H14"} <= rule_ids
 
 
+@pytest.mark.parametrize(
+    ("period_ids", "has_h09_issue"),
+    (
+        (("P1", "P2", "P3", "P4", "P5"), False),
+        (("P2", "P3", "P4", "P5", "P6"), False),
+        (("P1", "P3", "P4", "P5", "P6"), True),
+        (("P2", "P4", "P5", "P6"), False),
+        (("P1", "P2", "P3", "P4", "P5", "P6"), True),
+    ),
+)
+def test_result_validator_applies_h09_teacher_work_pattern(
+    minimal_input_data: InputDataModel,
+    period_ids: tuple[str, ...],
+    has_h09_issue: bool,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=tuple(
+            replace(rule, consecutive_limit=5) if rule.rule_id == "R_TEACHER_BASE" else rule
+            for rule in minimal_input_data.placement_rules
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = tuple(
+        _lesson(requirement_id=f"Q{index}", period_id=period_id)
+        for index, period_id in enumerate(period_ids, start=1)
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+    h09_issues = [issue for issue in report.issues if issue.rule_id == "H09"]
+
+    assert bool(h09_issues) is has_h09_issue
+
+
 def test_assign_rooms_uses_class_id_and_room_output_order_stably(
     minimal_input_data: InputDataModel,
 ) -> None:
@@ -180,6 +216,65 @@ def test_document_builder_sorts_axes_and_maps_ids_to_display_names(
         output_lesson.subject_display_name,
         output_lesson.teacher_display_name,
     ) == ("小学A", "算数", "教師一")
+
+
+def test_flexible_teacher_day_off_is_validated_and_rendered_as_full_day(
+    minimal_input_data: InputDataModel,
+) -> None:
+    target_date = minimal_input_data.calendar_days[0].target_date
+    input_data = replace(
+        minimal_input_data,
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
+        ),
+    )
+    day_offs = (ScheduledTeacherDayOffModel("T1", target_date),)
+    resolved = RuleResolverService().execute(input_data)
+
+    report = ValidateResultService().execute(
+        input_data,
+        resolved,
+        (),
+        teacher_day_offs=day_offs,
+    )
+    document = BuildTimetableDocumentService().execute(input_data, (), day_offs)
+
+    assert not {issue.rule_id for issue in report.issues} & {"H18", "H19"}
+    output_leave = document.dates[0].teacher_leaves[0]
+    assert output_leave.teacher_display_name == "教師一"
+    assert output_leave.unavailable_period_ids == tuple(f"P{i}" for i in range(1, 7))
+
+
+def test_result_validator_reports_teacher_day_off_work_and_annotation_overflow(
+    minimal_input_data: InputDataModel,
+) -> None:
+    target_date = minimal_input_data.calendar_days[0].target_date
+    input_data = replace(
+        minimal_input_data,
+        rooms=(minimal_input_data.rooms[0], minimal_input_data.rooms[2]),
+        teachers=(
+            minimal_input_data.teachers[0],
+            replace(minimal_input_data.teachers[1], home_campus_id="C1"),
+        ),
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
+            TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, target_date, target_date, 1),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    day_offs = (
+        ScheduledTeacherDayOffModel("T1", target_date),
+        ScheduledTeacherDayOffModel("T2", target_date),
+    )
+
+    report = ValidateResultService().execute(
+        input_data,
+        resolved,
+        (_lesson(),),
+        teacher_day_offs=day_offs,
+    )
+
+    assert {"H18", "H19"} <= {issue.rule_id for issue in report.issues}
 
 
 def test_document_builder_rejects_duplicate_slot_and_output_excluded_date(

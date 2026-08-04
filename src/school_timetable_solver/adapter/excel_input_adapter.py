@@ -16,6 +16,7 @@ from school_timetable_solver.model.input_models import (
     LessonCountRuleSegmentModel,
     LessonRequirementModel,
     PlacementRuleModel,
+    TeacherDayOffRuleModel,
     TeacherLeaveModel,
 )
 from school_timetable_solver.model.master_models import (
@@ -141,6 +142,15 @@ class ExcelInputReaderAdapter:
             "target_periods",
             "note",
         ),
+        "15_教師休日日数ルール": (
+            "rule_id",
+            "teacher_id",
+            "enabled",
+            "start_date",
+            "end_date",
+            "required_days_off",
+            "note",
+        ),
     }
     _required_sheets: ClassVar[tuple[str, ...]] = (
         "00_操作説明",
@@ -209,6 +219,10 @@ class ExcelInputReaderAdapter:
             rows_by_sheet["14_授業配置数選好ルール"],
             issues,
         )
+        teacher_day_off_rules = self._read_teacher_day_off_rules(
+            rows_by_sheet["15_教師休日日数ルール"],
+            issues,
+        )
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
         return InputReadResultModel(
@@ -226,6 +240,7 @@ class ExcelInputReaderAdapter:
                 placement_rules=tuple(placement_rules),
                 lesson_count_rule_segments=tuple(lesson_count_rule_segments),
                 lesson_count_preference_rule_segments=tuple(lesson_count_preference_rule_segments),
+                teacher_day_off_rules=tuple(teacher_day_off_rules),
             ),
             tuple(issues),
         )
@@ -912,6 +927,49 @@ class ExcelInputReaderAdapter:
                         unavailable_period_ids=unavailable_period_ids,
                     )
                 )
+        return result
+
+    def _read_teacher_day_off_rules(
+        self,
+        rows: list[tuple[int, dict[str, object]]],
+        issues: list[ValidationIssueModel],
+    ) -> list[TeacherDayOffRuleModel]:
+        sheet_name = "15_教師休日日数ルール"
+        result: list[TeacherDayOffRuleModel] = []
+        for row_number, row in rows:
+            values = (
+                self._text(row["rule_id"], sheet_name, row_number, "rule_id", issues),
+                self._text(row["teacher_id"], sheet_name, row_number, "teacher_id", issues),
+                self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
+                self._date(row["start_date"], sheet_name, row_number, "start_date", issues),
+                self._date(row["end_date"], sheet_name, row_number, "end_date", issues),
+                self._integer(
+                    row["required_days_off"],
+                    sheet_name,
+                    row_number,
+                    "required_days_off",
+                    issues,
+                ),
+            )
+            if None in values:
+                continue
+            rule_id, teacher_id, enabled, start_date, end_date, required_days_off = values
+            assert isinstance(rule_id, str)
+            assert isinstance(teacher_id, str)
+            assert isinstance(enabled, bool)
+            assert isinstance(start_date, date)
+            assert isinstance(end_date, date)
+            assert isinstance(required_days_off, int)
+            result.append(
+                TeacherDayOffRuleModel(
+                    rule_id=rule_id,
+                    teacher_id=teacher_id,
+                    enabled=enabled,
+                    start_date=start_date,
+                    end_date=end_date,
+                    required_days_off=required_days_off,
+                )
+            )
         return result
 
     def _read_placement_rules(

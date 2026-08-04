@@ -13,10 +13,14 @@ from school_timetable_solver.constraint.hard_constraints import (
     ConsecutiveAttendanceConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
+    TeacherConsecutivePeriodConstraint,
+    TeacherDayOffQuotaConstraint,
+    TeacherLeaveAnnotationCapacityConstraint,
     TeacherOverlapConstraint,
     TeacherSingleCampusPerDayConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
+from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     ResolvedLessonCountRuleModel,
@@ -83,6 +87,19 @@ def _force_all_and_solve(context: SolverContext) -> str:
     return solver.status_name(solver.solve(context.model))
 
 
+def _solve_with_teacher_periods(
+    context: SolverContext,
+    selected_period_ids: set[str],
+) -> str:
+    for candidate in context.candidates:
+        context.model.add(
+            context.assignment_variables[candidate.candidate_id]
+            == int(candidate.period_id in selected_period_ids)
+        )
+    solver = cp_model.CpSolver()
+    return solver.status_name(solver.solve(context.model))
+
+
 @pytest.mark.parametrize(
     ("candidates", "expected_feasible"),
     (
@@ -126,6 +143,39 @@ def test_h11_teacher_single_campus_per_day(
     status = _force_all_and_solve(context)
 
     assert (status in {"OPTIMAL", "FEASIBLE"}) is expected_feasible
+
+
+def test_h18_selects_exact_full_day_off_and_forbids_work_on_that_day() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+        _candidate("Q1__2", "T1", DAY_TWO, "C1", "P1"),
+    )
+    context = _context(candidates)
+    context.teacher_day_off_rules = (
+        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, DAY_ONE, DAY_TWO, 1),
+    )
+    TeacherDayOffQuotaConstraint().apply(context)
+    context.model.add(context.assignment_variables["Q1__1"] == 1)
+    context.model.add(context.assignment_variables["Q1__2"] == 0)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert solver.value(context.teacher_day_off_variables[("T1", DAY_TWO)]) == 1
+
+
+def test_h19_rejects_leave_annotations_beyond_campus_room_columns() -> None:
+    context = _context(())
+    context.room_capacities["C1"] = 1
+    context.teacher_home_campuses = {"T1": "C1", "T2": "C1"}
+    context.teacher_day_off_rules = (
+        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, DAY_ONE, DAY_ONE, 1),
+        TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, DAY_ONE, DAY_ONE, 1),
+    )
+    TeacherDayOffQuotaConstraint().apply(context)
+    TeacherLeaveAnnotationCapacityConstraint().apply(context)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
 
 
 def test_required_count_constraint_rejects_missing_assignment() -> None:
@@ -315,6 +365,32 @@ def test_teacher_overlap_forces_each_slot_only_when_demand_equals_slot_supply() 
         "OPTIMAL",
         "FEASIBLE",
     }
+
+
+@pytest.mark.parametrize(
+    ("selected_period_ids", "expected_feasible"),
+    (
+        ({"P1", "P2", "P3", "P4", "P5"}, True),
+        ({"P2", "P3", "P4", "P5", "P6"}, True),
+        ({"P1", "P3", "P4", "P5", "P6"}, False),
+        ({"P2", "P4", "P5", "P6"}, True),
+        ({"P1", "P2", "P3", "P4", "P5", "P6"}, False),
+    ),
+)
+def test_h09_restricts_five_period_teacher_work_patterns(
+    selected_period_ids: set[str],
+    expected_feasible: bool,
+) -> None:
+    candidates = tuple(
+        _candidate(f"Q{index}__1", "T1", DAY_ONE, "C1", f"P{index}") for index in range(1, 7)
+    )
+    context = _context(candidates)
+    context.teacher_consecutive_limits["T1", DAY_ONE] = 5
+    TeacherConsecutivePeriodConstraint().apply(context)
+
+    status = _solve_with_teacher_periods(context, selected_period_ids)
+
+    assert (status in {"OPTIMAL", "FEASIBLE"}) is expected_feasible
 
 
 def test_h10_rejects_four_consecutive_attendance_days_when_limit_is_three() -> None:

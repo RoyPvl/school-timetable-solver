@@ -15,6 +15,7 @@ from school_timetable_solver.model.result_models import (
     RoomColumnModel,
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
+    ScheduledTeacherDayOffModel,
     TimetableDocumentModel,
     ValidationIssueModel,
     ValidationReportModel,
@@ -87,6 +88,7 @@ class ValidateResultService:
         resolved_rules: ResolvedRuleSetModel,
         lessons: tuple[ScheduledLessonModel, ...],
         candidate_result: CandidateBuildResultModel | None = None,
+        teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...] = (),
     ) -> ValidationReportModel:
         issues: list[ValidationIssueModel] = []
         self._validate_required_counts(input_data, lessons, issues)
@@ -97,6 +99,12 @@ class ValidateResultService:
         self._validate_consecutive_periods(input_data, resolved_rules, lessons, issues)
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
         self._validate_single_campus_per_day(lessons, issues)
+        self._validate_teacher_day_offs(input_data, lessons, teacher_day_offs, issues)
+        self._validate_teacher_leave_annotation_capacity(
+            input_data,
+            teacher_day_offs,
+            issues,
+        )
         self._validate_class_room_continuity(lessons, issues)
         self._validate_class_long_internal_gaps(input_data, lessons, issues)
         self._report_room_change_gap_preference(input_data, lessons, issues)
@@ -128,6 +136,89 @@ class ValidateResultService:
             )
         self._report_class_subject_double_then_next_day_preference(lessons, issues)
         return ValidationReportModel(tuple(issues))
+
+    def _validate_teacher_day_offs(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        selected_counts = Counter(
+            (day_off.teacher_id, day_off.target_date) for day_off in teacher_day_offs
+        )
+        for key, count in selected_counts.items():
+            if count > 1:
+                issues.append(self._issue("H18", str(key), "同じ教師休業日が重複しています"))
+
+        allowed_slots = {
+            (rule.teacher_id, target_date)
+            for rule in input_data.teacher_day_off_rules
+            if rule.enabled
+            for target_date in (
+                day.target_date for day in input_data.calendar_days if day.output_enabled
+            )
+            if rule.start_date <= target_date <= rule.end_date
+        }
+        for key in selected_counts:
+            if key not in allowed_slots:
+                issues.append(self._issue("H18", str(key), "休日日数ルール対象外の休業日です"))
+
+        worked_days = {(lesson.teacher_id, lesson.target_date) for lesson in lessons}
+        for key in selected_counts.keys() & worked_days:
+            issues.append(self._issue("H18", str(key), "終日休みに授業が配置されています"))
+
+        selected_slots = set(selected_counts)
+        for rule in input_data.teacher_day_off_rules:
+            if not rule.enabled:
+                continue
+            actual = sum(
+                (rule.teacher_id, target_date) in selected_slots
+                for target_date in (
+                    day.target_date for day in input_data.calendar_days if day.output_enabled
+                )
+                if rule.start_date <= target_date <= rule.end_date
+            )
+            if actual != rule.required_days_off:
+                issues.append(
+                    self._issue(
+                        "H18",
+                        rule.rule_id,
+                        (
+                            "期間内の教師休日日数が一致しません: "
+                            f"actual={actual}, required={rule.required_days_off}"
+                        ),
+                    )
+                )
+
+    def _validate_teacher_leave_annotation_capacity(
+        self,
+        input_data: InputDataModel,
+        teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        teachers = {teacher.teacher_id: teacher for teacher in input_data.teachers}
+        period_ids = {period.period_id for period in input_data.periods}
+        room_counts = Counter(room.campus_id for room in input_data.rooms if room.enabled)
+        required_cells: Counter[tuple[str, date]] = Counter()
+        for leave in input_data.teacher_leaves:
+            teacher = teachers[leave.teacher_id]
+            required_cells[(teacher.home_campus_id, leave.target_date)] += (
+                1 if set(leave.unavailable_period_ids) == period_ids else 2
+            )
+        for day_off in teacher_day_offs:
+            teacher = teachers[day_off.teacher_id]
+            required_cells[(teacher.home_campus_id, day_off.target_date)] += 1
+        for (campus_id, target_date), required in required_cells.items():
+            available = room_counts[campus_id]
+            if required > available:
+                issues.append(
+                    self._issue(
+                        "H19",
+                        f"{campus_id}/{target_date}",
+                        f"教師休み注記容量超過: required={required}, available={available}",
+                    )
+                )
 
     def _validate_lesson_counts_in_scope(
         self,
@@ -375,18 +466,24 @@ class ValidateResultService:
                 )
         for key, orders in grouped.items():
             limit = limits.get(key)
-            if limit is None:
+            if limit is None or limit >= len(period_orders):
                 continue
-            longest = 0
-            current = 0
-            previous: int | None = None
-            for order in sorted(orders):
-                current = current + 1 if previous is not None and order == previous + 1 else 1
-                longest = max(longest, current)
-                previous = order
-            if longest > limit:
+            ordered_periods = tuple(sorted(period_orders.values()))
+            occupied_periods = tuple(sorted(orders))
+            is_allowed = len(occupied_periods) < limit or any(
+                occupied_periods == ordered_periods[start : start + limit]
+                for start in range(len(ordered_periods) - limit + 1)
+            )
+            if not is_allowed:
                 issues.append(
-                    self._issue("H09", str(key), f"教師連続時限上限超過: {longest}>{limit}")
+                    self._issue(
+                        "H09",
+                        str(key),
+                        (
+                            "教師勤務パターン上限超過: "
+                            f"occupied_periods={occupied_periods}, limit={limit}"
+                        ),
+                    )
                 )
 
     def _validate_attendance_streaks(
@@ -842,6 +939,7 @@ class BuildTimetableDocumentService:
         self,
         input_data: InputDataModel,
         lessons: tuple[ScheduledLessonModel, ...],
+        teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...] = (),
     ) -> TimetableDocumentModel:
         output_days = sorted(
             (day for day in input_data.calendar_days if day.output_enabled),
@@ -957,6 +1055,25 @@ class BuildTimetableDocumentService:
                             teacher_leave.unavailable_period_ids,
                             key=period_orders.__getitem__,
                         )
+                    ),
+                )
+            )
+        for day_off in teacher_day_offs:
+            if day_off.target_date not in output_dates:
+                continue
+            teacher = teachers.get(day_off.teacher_id)
+            if teacher is None:
+                raise ValueError(
+                    "教師休日日数ルールが未知または無効な教師を参照しています: "
+                    f"{day_off.teacher_id}"
+                )
+            teacher_leaves_by_date[day_off.target_date].append(
+                OutputTeacherLeaveModel(
+                    teacher_display_name=teacher.teacher_name,
+                    campus_id=teacher.home_campus_id,
+                    unavailable_period_ids=tuple(
+                        period.period_id
+                        for period in sorted(period_models, key=lambda item: item.output_order)
                     ),
                 )
             )
