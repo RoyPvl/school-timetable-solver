@@ -42,6 +42,8 @@ desktop.ini
 ~$*.xlsm
 
 # Generated outputs and logs
+outputs/
+*.inspect.ndjson
 projects/*/output/*
 !projects/*/output/.gitkeep
 *.log
