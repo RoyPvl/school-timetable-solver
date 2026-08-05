@@ -170,6 +170,20 @@ class TimetableSolverService:
                     if room.enabled and room.campus_id in enabled_campus_ids
                 )
             ),
+            room_priorities_by_campus={
+                campus_id: tuple(
+                    room.priority
+                    for room in sorted(
+                        (
+                            room
+                            for room in input_data.rooms
+                            if room.enabled and room.campus_id == campus_id
+                        ),
+                        key=lambda item: item.output_order,
+                    )
+                )
+                for campus_id in enabled_campus_ids
+            },
             class_daily_limits={
                 (rule.class_id, rule.target_date): rule.daily_hard_limit
                 for rule in resolved_rules.class_date_rules

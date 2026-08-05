@@ -37,9 +37,9 @@ def test_sample_cli_generates_one_sheet_verified_matrix_workbook(tmp_path: Path)
     assert workbook.sheetnames == ["全体"]
     worksheet = workbook["全体"]
     assert worksheet["A2"].value is not None
-    assert worksheet["G2"].value is not None
+    assert worksheet["H2"].value is not None
     assert worksheet["A24"].value is not None
-    assert worksheet["G24"].value is None
+    assert worksheet["H24"].value is None
     assert {"A2:B2", "A3:B3", "C2:D2", "A4:A6"} <= {
         str(item) for item in worksheet.merged_cells.ranges
     }
@@ -47,10 +47,16 @@ def test_sample_cli_generates_one_sheet_verified_matrix_workbook(tmp_path: Path)
     generated_class_cells = [
         worksheet.cell(row, column).value
         for row in class_rows
-        for column in (3, 4, 5, 9, 10, 11)
+        for column in (3, 4, 5, 6, 10, 11, 12, 13)
         if worksheet.cell(row, column).value is not None
     ]
     assert len(generated_class_cells) == 4
+    assert not [
+        worksheet.cell(row, column).value
+        for row in class_rows
+        for column in (3, 5, 10, 12)
+        if worksheet.cell(row, column).value is not None
+    ]
     assert worksheet["A2"].border.top.style == "thin"
     assert worksheet["C4"].border.bottom.style == "hair"
     assert workbook.__dict__.get("_external_links") == []

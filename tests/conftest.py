@@ -54,9 +54,9 @@ def minimal_input_data() -> InputDataModel:
             CampusModel("C2", "第二校舎", 2, True),
         ),
         rooms=(
-            RoomModel("R1", "101", "C1", 1, True),
-            RoomModel("R2", "102", "C1", 2, True),
-            RoomModel("R3", "201", "C2", 1, True),
+            RoomModel("R1", "101", "C1", 1, 0, True),
+            RoomModel("R2", "102", "C1", 2, 100, True),
+            RoomModel("R3", "201", "C2", 1, 100, True),
         ),
         teachers=(
             TeacherModel("T1", "教師一", "C1", True),

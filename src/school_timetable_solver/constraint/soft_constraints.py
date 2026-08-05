@@ -13,7 +13,7 @@ class RoomChangeGapPreferenceConstraint:
     """S10: minimize adjacent-period changes between different classes in one room."""
 
     rule_id = "S10"
-    priority = 10
+    priority = 9
     optimization_scope = "room"
 
     def apply(self, context: SolverContext) -> None:
@@ -80,6 +80,55 @@ class RoomChangeGapPreferenceConstraint:
                         context.penalty_terms_by_priority.setdefault(self.priority, []).append(
                             penalty
                         )
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class RoomPriorityPreferenceConstraint:
+    """S19: prefer higher-priority rooms for each scheduled lesson."""
+
+    rule_id = "S19"
+    priority = 10
+    optimization_scope = "room"
+
+    def apply(self, context: SolverContext) -> None:
+        for (campus_id, target_date, class_id), room in context.class_room_variables.items():
+            priorities = context.room_priorities_by_campus.get(campus_id, ())
+            if not priorities:
+                continue
+            highest_priority = max(priorities)
+            for room_index, room_priority in enumerate(priorities):
+                priority_gap = highest_priority - room_priority
+                if priority_gap == 0:
+                    continue
+                uses_room = context.model.new_bool_var(
+                    f"uses_room__{campus_id}__{target_date.isoformat()}__{class_id}__{room_index}"
+                )
+                context.model.add(room == room_index).only_enforce_if(uses_room)
+                context.model.add(room != room_index).only_enforce_if(uses_room.negated())
+                for period_id in context.period_orders:
+                    slot = context.class_slot_variables.get(
+                        (campus_id, target_date, class_id, period_id)
+                    )
+                    if slot is None:
+                        continue
+                    low_priority_lesson = context.model.new_bool_var(
+                        f"room_priority_usage__{campus_id}__{target_date.isoformat()}__"
+                        f"{class_id}__{period_id}__{room_index}"
+                    )
+                    context.model.add_bool_and([slot, uses_room]).only_enforce_if(
+                        low_priority_lesson
+                    )
+                    context.model.add_bool_or(
+                        [slot.negated(), uses_room.negated(), low_priority_lesson]
+                    )
+                    penalty = context.model.new_int_var(
+                        0,
+                        priority_gap,
+                        f"room_priority_penalty__{campus_id}__"
+                        f"{target_date.isoformat()}__{class_id}__{period_id}__{room_index}",
+                    )
+                    context.model.add(penalty == priority_gap * low_priority_lesson)
+                    context.penalty_terms_by_priority.setdefault(self.priority, []).append(penalty)
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -584,6 +633,7 @@ class LessonCountInScopePreferenceConstraint:
 
 DEFAULT_SOFT_CONSTRAINTS = (
     RoomChangeGapPreferenceConstraint(),
+    RoomPriorityPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
     ClassSubjectDailyRepeatPreferenceConstraint(),
     ClassSubjectScheduleBalancePreferenceConstraint(),
@@ -596,6 +646,7 @@ DEFAULT_SOFT_CONSTRAINTS = (
 
 SoftConstraint = (
     RoomChangeGapPreferenceConstraint
+    | RoomPriorityPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
     | ClassSubjectDailyRepeatPreferenceConstraint
     | ClassSubjectScheduleBalancePreferenceConstraint
