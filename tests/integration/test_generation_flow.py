@@ -138,7 +138,7 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert sorted(lesson_counts.values()) == [1, 1, 2]
-    assert solver_result.statistics.constraint_rule_ids[-9:] == (
+    assert solver_result.statistics.constraint_rule_ids[-10:] == (
         "S14",
         "S15",
         "S11",
@@ -147,6 +147,7 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
         "S16",
         "S13",
         "S17",
+        "S19",
         "S10",
     )
 

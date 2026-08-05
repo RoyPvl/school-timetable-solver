@@ -45,6 +45,22 @@ def test_validator_detects_duplicate_ids_and_output_orders(
     } <= rule_ids
 
 
+def test_validator_rejects_negative_room_priority(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        rooms=(
+            replace(minimal_input_data.rooms[0], priority=-1),
+            *minimal_input_data.rooms[1:],
+        ),
+    )
+
+    issues = ReferenceIntegrityValidator().validate(invalid)
+
+    assert any(issue.rule_id == "INVALID_ROOM_PRIORITY" for issue in issues)
+
+
 def test_validator_detects_unknown_and_disabled_references(
     minimal_input_data: InputDataModel,
 ) -> None:

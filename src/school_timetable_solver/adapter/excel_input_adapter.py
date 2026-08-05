@@ -34,7 +34,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.6 workbooks into Excel-independent models."""
+    """Read input-contract v0.7 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -56,6 +56,7 @@ class ExcelInputReaderAdapter:
             "room_name",
             "campus_id",
             "output_order",
+            "priority",
             "enabled",
             "note",
         ),
@@ -339,7 +340,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.6":
+        if schema_version is not None and schema_version != "0.7":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -657,16 +658,20 @@ class ExcelInputReaderAdapter:
                 self._text(row["room_name"], "05_教室", row_number, "room_name", issues),
                 self._text(row["campus_id"], "05_教室", row_number, "campus_id", issues),
                 self._integer(row["output_order"], "05_教室", row_number, "output_order", issues),
+                self._integer(row["priority"], "05_教室", row_number, "priority", issues),
                 self._boolean(row["enabled"], "05_教室", row_number, "enabled", issues),
             )
             if None not in values:
-                room_id, room_name, campus_id, output_order, enabled = values
+                room_id, room_name, campus_id, output_order, priority, enabled = values
                 assert room_id is not None
                 assert room_name is not None
                 assert campus_id is not None
                 assert output_order is not None
+                assert priority is not None
                 assert enabled is not None
-                result.append(RoomModel(room_id, room_name, campus_id, output_order, enabled))
+                result.append(
+                    RoomModel(room_id, room_name, campus_id, output_order, priority, enabled)
+                )
         return result
 
     def _read_teachers(

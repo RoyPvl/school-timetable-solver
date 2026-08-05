@@ -29,6 +29,7 @@ class SolverContext:
     class_attendance_limits: dict[tuple[str, date], int | None]
     period_orders: dict[str, int]
     calendar_dates: tuple[date, ...]
+    room_priorities_by_campus: dict[str, tuple[int, ...]] = field(default_factory=dict)
     class_attendance_preference_limits: dict[tuple[str, date], int | None] = field(
         default_factory=dict
     )

@@ -409,6 +409,21 @@ def test_result_validator_allows_room_reuse_after_one_empty_period(
     assert len([issue for issue in report.issues if issue.rule_id == "S12"]) == 2
 
 
+def test_result_validator_reports_s19_room_priority_penalty(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (_lesson(requirement_id="Q1", period_id="P1", room_id="R1", class_id="CL1"),)
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+
+    s19_issues = [issue for issue in report.issues if issue.rule_id == "S19"]
+    assert len(s19_issues) == 1
+    assert s19_issues[0].severity == "WARNING"
+    assert "lessons=1" in s19_issues[0].message
+    assert "penalty=100" in s19_issues[0].message
+
+
 def test_result_validator_warns_only_for_exactly_one_lesson_class_days(
     minimal_input_data: InputDataModel,
 ) -> None:

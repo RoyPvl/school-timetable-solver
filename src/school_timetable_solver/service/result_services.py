@@ -107,6 +107,7 @@ class ValidateResultService:
         )
         self._validate_class_room_continuity(lessons, issues)
         self._validate_class_long_internal_gaps(input_data, lessons, issues)
+        self._report_room_priority_preference(input_data, lessons, issues)
         self._report_room_change_gap_preference(input_data, lessons, issues)
         self._report_class_daily_contiguity_preference(input_data, lessons, issues)
         self._report_class_consecutive_attendance_preference(
@@ -709,6 +710,45 @@ class ValidateResultService:
                             ),
                         )
                     )
+
+    def _report_room_priority_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        rooms = {room.room_id: room for room in input_data.rooms if room.enabled}
+        highest_priorities: dict[str, int] = {}
+        for room in rooms.values():
+            highest_priorities[room.campus_id] = max(
+                highest_priorities.get(room.campus_id, room.priority),
+                room.priority,
+            )
+        penalty_by_room: Counter[str] = Counter()
+        lesson_count_by_room: Counter[str] = Counter()
+        for lesson in lessons:
+            room = rooms.get(lesson.room_id)
+            if room is None:
+                continue
+            priority_gap = highest_priorities[room.campus_id] - room.priority
+            if priority_gap > 0:
+                penalty_by_room[room.room_id] += priority_gap
+                lesson_count_by_room[room.room_id] += 1
+        for room_id, penalty in penalty_by_room.items():
+            room = rooms[room_id]
+            issues.append(
+                ValidationIssueModel(
+                    "S19",
+                    "WARNING",
+                    room_id,
+                    (
+                        "校舎内最高priorityより低い教室へ授業が配置されています: "
+                        f"priority={room.priority}, "
+                        f"highest_priority={highest_priorities[room.campus_id]}, "
+                        f"lessons={lesson_count_by_room[room_id]}, penalty={penalty}"
+                    ),
+                )
+            )
 
     def _report_class_daily_contiguity_preference(
         self,

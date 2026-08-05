@@ -167,10 +167,6 @@ class ClassRoomContinuityConstraint:
                 )
             ].append(variable)
 
-        class_days_by_campus_day: dict[
-            tuple[str, date],
-            list[tuple[str, cp_model.IntVar, cp_model.IntVar]],
-        ] = defaultdict(list)
         for key, variables in variables_by_class_day.items():
             campus_id, target_date, class_id = key
             presence = context.model.new_bool_var(
@@ -185,18 +181,6 @@ class ClassRoomContinuityConstraint:
             context.model.add(room == 0).only_enforce_if(presence.negated())
             context.class_room_variables[key] = room
             context.class_room_presence_variables[key] = presence
-            class_days_by_campus_day[(campus_id, target_date)].append((class_id, presence, room))
-
-        for class_days in class_days_by_campus_day.values():
-            previous_presence_variables: list[cp_model.IntVar] = []
-            for _, presence, room in sorted(class_days):
-                if previous_presence_variables:
-                    context.model.add(room <= sum(previous_presence_variables)).only_enforce_if(
-                        presence
-                    )
-                else:
-                    context.model.add(room == 0).only_enforce_if(presence)
-                previous_presence_variables.append(presence)
 
         classes_by_campus_slot: dict[
             tuple[str, date, str],

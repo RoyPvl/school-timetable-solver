@@ -17,6 +17,7 @@ from school_timetable_solver.constraint.soft_constraints import (
     ClassSubjectScheduleBalancePreferenceConstraint,
     LessonCountInScopePreferenceConstraint,
     RoomChangeGapPreferenceConstraint,
+    RoomPriorityPreferenceConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.solver_models import (
@@ -80,6 +81,41 @@ def test_s10_allows_adjacent_class_change_when_only_one_room_exists() -> None:
     solver, _ = _solve(room_capacity=1)
 
     assert solver.objective_value == 1
+
+
+def test_s19_avoids_lower_priority_room_when_higher_priority_room_is_available() -> None:
+    context = _context(room_capacity=2)
+    context.room_priorities_by_campus = {"C1": (0, 100)}
+    ClassRoomContinuityConstraint().apply(context)
+    constraint = RoomPriorityPreferenceConstraint()
+    constraint.apply(context)
+    for variable in context.assignment_variables.values():
+        context.model.add(variable == 1)
+    context.model.minimize(sum(context.penalty_terms_by_priority[constraint.priority]))
+
+    solver = cp_model.CpSolver()
+    status = solver.status_name(solver.solve(context.model))
+
+    assert status == "OPTIMAL"
+    assert solver.objective_value == 0
+    assert {solver.value(room) for room in context.class_room_variables.values()} == {1}
+
+
+def test_s19_treats_rooms_with_equal_priority_equally() -> None:
+    context = _context(room_capacity=2)
+    context.room_priorities_by_campus = {"C1": (100, 100)}
+    ClassRoomContinuityConstraint().apply(context)
+    constraint = RoomPriorityPreferenceConstraint()
+    constraint.apply(context)
+    for variable in context.assignment_variables.values():
+        context.model.add(variable == 1)
+    context.model.minimize(sum(context.penalty_terms_by_priority.get(constraint.priority, ())))
+
+    solver = cp_model.CpSolver()
+    status = solver.status_name(solver.solve(context.model))
+
+    assert status == "OPTIMAL"
+    assert solver.objective_value == 0
 
 
 def _solve_class_day_preference(

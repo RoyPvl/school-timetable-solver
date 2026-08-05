@@ -18,6 +18,7 @@ class RoomModel:
     room_name: str
     campus_id: str
     output_order: int
+    priority: int
     enabled: bool
 
 

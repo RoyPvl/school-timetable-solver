@@ -150,6 +150,15 @@ class ReferenceIntegrityValidator:
                         "同一校舎内の有効教室output_orderが重複しています",
                     )
                 )
+        for room in input_data.rooms:
+            if room.priority < 0:
+                issues.append(
+                    self._issue(
+                        "INVALID_ROOM_PRIORITY",
+                        room.room_id,
+                        "教室priorityは0以上が必要です",
+                    )
+                )
         period_orders = [item.output_order for item in input_data.periods]
         if len(input_data.periods) != 6 or set(period_orders) != set(range(1, 7)):
             issues.append(
