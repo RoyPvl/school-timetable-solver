@@ -59,7 +59,24 @@ class TeacherDayOffRuleModel:
     enabled: bool
     start_date: date
     end_date: date
-    required_days_off: int
+    required_days_off: int | None
+    minimum_days_off: int | None = None
+    maximum_days_off: int | None = None
+    quota_group_id: str | None = None
+    group_required_days_off: int | None = None
+    preferred_days_off: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HomeroomBoundaryRuleModel:
+    rule_id: str
+    rule_name: str
+    enabled: bool
+    condition_fields: tuple[str, ...]
+    condition_operators: tuple[str, ...]
+    condition_values: tuple[str, ...]
+    start_date: date
+    end_date: date
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,3 +148,4 @@ class InputDataModel:
         ...,
     ] = ()
     teacher_day_off_rules: tuple[TeacherDayOffRuleModel, ...] = ()
+    homeroom_boundary_rules: tuple[HomeroomBoundaryRuleModel, ...] = ()

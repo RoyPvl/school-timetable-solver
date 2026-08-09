@@ -6,12 +6,15 @@ from datetime import date, timedelta
 import pytest
 
 from school_timetable_solver.model.input_models import (
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    LessonRequirementModel,
     TeacherDayOffRuleModel,
     TeacherLeaveModel,
 )
+from school_timetable_solver.model.master_models import SubjectModel
 from school_timetable_solver.model.result_models import (
     ScheduledLessonDraftModel,
     ScheduledLessonModel,
@@ -335,6 +338,68 @@ def test_result_validator_reports_lesson_count_in_scope(
     report = ValidateResultService().execute(input_data, resolved, lessons)
 
     assert "H17" in {issue.rule_id for issue in report.issues}
+
+
+def test_result_validator_excludes_special_lessons_from_h20_boundary_dates(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        subjects=(*minimal_input_data.subjects, SubjectModel("S3", "特別講座", "special", True)),
+        lesson_requirements=(
+            *minimal_input_data.lesson_requirements,
+            LessonRequirementModel("Q3", "CL2", "S3", "T1", 1, 1, True),
+        ),
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HB1",
+                "通常授業の境界",
+                True,
+                ("class_id",),
+                ("eq",),
+                ("CL2",),
+                date(2026, 7, 27),
+                date(2026, 7, 28),
+            ),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = (
+        _lesson(
+            requirement_id="Q3",
+            target_date=date(2026, 7, 27),
+            period_id="P3",
+            teacher_id="T1",
+            room_id="R3",
+            campus_id="C2",
+            class_id="CL2",
+            subject_id="S3",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            target_date=date(2026, 7, 28),
+            period_id="P1",
+            teacher_id="T2",
+            room_id="R3",
+            campus_id="C2",
+            class_id="CL2",
+            subject_id="S2",
+        ),
+        _lesson(
+            requirement_id="Q2",
+            target_date=date(2026, 7, 28),
+            period_id="P2",
+            teacher_id="T2",
+            room_id="R3",
+            campus_id="C2",
+            class_id="CL2",
+            subject_id="S2",
+        ),
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    assert not [issue for issue in report.issues if issue.rule_id == "H20"]
 
 
 def test_result_validator_warns_for_lesson_count_preference_deviation(

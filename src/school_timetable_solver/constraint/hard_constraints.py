@@ -57,6 +57,92 @@ class LessonCountInScopeConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class HomeroomAttendanceBoundaryConstraint:
+    """H20: require a regular homeroom-teacher lesson on each attendance boundary day."""
+
+    rule_id = "H20"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_date: dict[
+            tuple[str, date],
+            list[tuple[str, cp_model.IntVar]],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_date[(candidate.class_id, candidate.target_date)].append(
+                (
+                    candidate.requirement_id,
+                    context.assignment_variables[candidate.candidate_id],
+                )
+            )
+
+        for rule in context.homeroom_boundary_rules:
+            attendance_requirement_ids = set(rule.attendance_requirement_ids)
+            attendance_variables_by_date = {
+                target_date: [
+                    variable
+                    for requirement_id, variable in variables
+                    if requirement_id in attendance_requirement_ids
+                ]
+                for (class_id, target_date), variables in variables_by_class_date.items()
+                if class_id == rule.class_id and rule.start_date <= target_date <= rule.end_date
+            }
+            attendance_variables_by_date = {
+                target_date: variables
+                for target_date, variables in attendance_variables_by_date.items()
+                if variables
+            }
+            target_dates = sorted(attendance_variables_by_date)
+            if not target_dates:
+                context.model.add(0 >= 1)
+                continue
+            eligible_requirement_ids = set(rule.eligible_requirement_ids)
+            eligible_variables_by_date = {
+                target_date: [
+                    variable
+                    for requirement_id, variable in variables_by_class_date[
+                        (rule.class_id, target_date)
+                    ]
+                    if requirement_id in eligible_requirement_ids
+                ]
+                for target_date in target_dates
+            }
+            attendance_variables: dict[date, cp_model.IntVar] = {}
+            for target_date in target_dates:
+                attendance = context.model.new_bool_var(
+                    f"h20_attendance__{rule.source_rule_id}__{rule.class_id}__"
+                    f"{target_date.isoformat()}"
+                )
+                context.model.add_max_equality(
+                    attendance,
+                    attendance_variables_by_date[target_date],
+                )
+                attendance_variables[target_date] = attendance
+                context.homeroom_attendance_variables[
+                    (rule.source_rule_id, rule.class_id, target_date)
+                ] = attendance
+
+            # H06 normally guarantees attendance, but keeping this explicit makes H20
+            # independently equivalent to the former exactly-one boundary encoding.
+            context.model.add(sum(attendance_variables.values()) >= 1)
+            earlier_attendance: list[cp_model.IntVar] = []
+            for target_date in target_dates:
+                eligible_variables = eligible_variables_by_date[target_date]
+                context.model.add(
+                    attendance_variables[target_date]
+                    <= sum(eligible_variables) + sum(earlier_attendance)
+                )
+                earlier_attendance.append(attendance_variables[target_date])
+
+            later_attendance: list[cp_model.IntVar] = []
+            for target_date in reversed(target_dates):
+                context.model.add(
+                    attendance_variables[target_date]
+                    <= sum(eligible_variables_by_date[target_date]) + sum(later_attendance)
+                )
+                later_attendance.append(attendance_variables[target_date])
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class TeacherOverlapConstraint:
     """H01: prohibit simultaneous lessons for one teacher."""
 
@@ -424,6 +510,8 @@ class TeacherDayOffQuotaConstraint:
                 context.assignment_variables[candidate.candidate_id]
             )
 
+        variables_by_group: dict[tuple[str, str], list[cp_model.IntVar]] = defaultdict(list)
+        group_totals: dict[tuple[str, str], int] = {}
         for rule in context.teacher_day_off_rules:
             if not rule.enabled:
                 continue
@@ -442,7 +530,21 @@ class TeacherDayOffQuotaConstraint:
                     if assignments:
                         context.model.add(sum(assignments) == 0).only_enforce_if(day_off)
                 rule_variables.append(day_off)
-            context.model.add(sum(rule_variables) == rule.required_days_off)
+            rule_sum = sum(rule_variables)
+            if rule.required_days_off is not None:
+                context.model.add(rule_sum == rule.required_days_off)
+            else:
+                assert rule.minimum_days_off is not None
+                assert rule.maximum_days_off is not None
+                context.model.add(rule_sum >= rule.minimum_days_off)
+                context.model.add(rule_sum <= rule.maximum_days_off)
+            if rule.quota_group_id is not None:
+                group_key = (rule.teacher_id, rule.quota_group_id)
+                variables_by_group[group_key].extend(rule_variables)
+                assert rule.group_required_days_off is not None
+                group_totals[group_key] = rule.group_required_days_off
+        for group_key, variables in variables_by_group.items():
+            context.model.add(sum(variables) == group_totals[group_key])
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -470,6 +572,7 @@ class TeacherLeaveAnnotationCapacityConstraint:
 DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
     LessonCountInScopeConstraint(),
+    HomeroomAttendanceBoundaryConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
     CampusRoomCapacityConstraint(),
@@ -487,6 +590,7 @@ DEFAULT_HARD_CONSTRAINTS = (
 HardConstraint = (
     RequiredLessonCountConstraint
     | LessonCountInScopeConstraint
+    | HomeroomAttendanceBoundaryConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
     | CampusRoomCapacityConstraint

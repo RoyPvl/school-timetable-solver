@@ -132,6 +132,255 @@ class RoomPriorityPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class HomeroomBoundarySlotPreferenceConstraint:
+    """S20: prefer the homeroom lesson at the class day's first and last slot."""
+
+    rule_id = "S20"
+    priority = 35
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        eligible_by_rule_date_period: dict[
+            tuple[str, str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        rules_by_class = defaultdict(list)
+        for rule in context.homeroom_boundary_rules:
+            rules_by_class[rule.class_id].append(rule)
+        for candidate in context.candidates:
+            for rule in rules_by_class[candidate.class_id]:
+                if (
+                    rule.start_date <= candidate.target_date <= rule.end_date
+                    and candidate.requirement_id in rule.eligible_requirement_ids
+                ):
+                    eligible_by_rule_date_period[
+                        (
+                            rule.source_rule_id,
+                            rule.class_id,
+                            candidate.target_date,
+                            candidate.period_id,
+                        )
+                    ].append(context.assignment_variables[candidate.candidate_id])
+
+        ordered_period_ids = tuple(
+            period_id
+            for period_id, _ in sorted(context.period_orders.items(), key=lambda item: item[1])
+        )
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(self.priority, {})
+        for rule in context.homeroom_boundary_rules:
+            target_dates = [
+                target_date
+                for target_date in context.calendar_dates
+                if (rule.source_rule_id, rule.class_id, target_date)
+                in context.homeroom_attendance_variables
+            ]
+            attendance_variables = {
+                target_date: context.homeroom_attendance_variables[
+                    (rule.source_rule_id, rule.class_id, target_date)
+                ]
+                for target_date in target_dates
+            }
+            first_boundaries = self._add_boundary_date_variables(
+                context,
+                rule.source_rule_id,
+                rule.class_id,
+                target_dates,
+                attendance_variables,
+                "first",
+            )
+            reversed_dates = list(reversed(target_dates))
+            last_boundaries = self._add_boundary_date_variables(
+                context,
+                rule.source_rule_id,
+                rule.class_id,
+                reversed_dates,
+                attendance_variables,
+                "last",
+            )
+            if first_boundaries:
+                context.model.add_exactly_one(first_boundaries)
+                context.model.add_exactly_one(last_boundaries)
+            for target_date, boundary in zip(target_dates, first_boundaries, strict=True):
+                context.homeroom_first_date_variables[
+                    (rule.source_rule_id, rule.class_id, target_date)
+                ] = boundary
+            for target_date, boundary in zip(reversed_dates, last_boundaries, strict=True):
+                context.homeroom_last_date_variables[
+                    (rule.source_rule_id, rule.class_id, target_date)
+                ] = boundary
+
+            for target_date in context.calendar_dates:
+                key = (rule.source_rule_id, rule.class_id, target_date)
+                first_boundary = context.homeroom_first_date_variables.get(key)
+                last_boundary = context.homeroom_last_date_variables.get(key)
+                if first_boundary is None or last_boundary is None:
+                    continue
+                slots = [
+                    context.class_slot_variables.get(
+                        (rule.campus_id, target_date, rule.class_id, period_id)
+                    )
+                    for period_id in ordered_period_ids
+                ]
+                first_slots = self._add_edge_slot_variables(
+                    context,
+                    rule.source_rule_id,
+                    rule.class_id,
+                    target_date,
+                    ordered_period_ids,
+                    slots,
+                    "first",
+                )
+                last_slots_reversed = self._add_edge_slot_variables(
+                    context,
+                    rule.source_rule_id,
+                    rule.class_id,
+                    target_date,
+                    tuple(reversed(ordered_period_ids)),
+                    list(reversed(slots)),
+                    "last",
+                )
+                last_slots = list(reversed(last_slots_reversed))
+                for period_id, first_slot, last_slot in zip(
+                    ordered_period_ids,
+                    first_slots,
+                    last_slots,
+                    strict=True,
+                ):
+                    eligible_variables = eligible_by_rule_date_period.get(
+                        (rule.source_rule_id, rule.class_id, target_date, period_id),
+                        (),
+                    )
+                    eligible = context.model.new_bool_var(
+                        f"s20_eligible__{rule.source_rule_id}__{rule.class_id}__"
+                        f"{target_date.isoformat()}__{period_id}"
+                    )
+                    if eligible_variables:
+                        context.model.add_max_equality(eligible, eligible_variables)
+                    else:
+                        context.model.add(eligible == 0)
+                    for boundary_name, boundary, edge_slot in (
+                        ("first", first_boundary, first_slot),
+                        ("last", last_boundary, last_slot),
+                    ):
+                        penalty = context.model.new_bool_var(
+                            f"s20_{boundary_name}__{rule.source_rule_id}__{rule.class_id}__"
+                            f"{target_date.isoformat()}__{period_id}"
+                        )
+                        context.model.add(penalty <= boundary)
+                        context.model.add(penalty <= edge_slot)
+                        context.model.add(penalty + eligible <= 1)
+                        context.model.add(penalty >= boundary + edge_slot - eligible - 1)
+                        context.penalty_terms_by_priority.setdefault(self.priority, []).append(
+                            penalty
+                        )
+                        penalty_groups.setdefault((rule.source_rule_id, rule.class_id), []).append(
+                            penalty
+                        )
+        context.applied_rule_ids.append(self.rule_id)
+
+    def _add_boundary_date_variables(
+        self,
+        context: SolverContext,
+        source_rule_id: str,
+        class_id: str,
+        ordered_dates: list[date],
+        attendance_variables: dict[date, cp_model.IntVar],
+        boundary_name: str,
+    ) -> list[cp_model.IntVar]:
+        boundary_variables: list[cp_model.IntVar] = []
+        attendance_seen: cp_model.IntVar | None = None
+        for date_index, target_date in enumerate(ordered_dates):
+            attendance = attendance_variables[target_date]
+            boundary = context.model.new_bool_var(
+                f"s20_{boundary_name}_date__{source_rule_id}__{class_id}__{target_date.isoformat()}"
+            )
+            if attendance_seen is None:
+                context.model.add(boundary == attendance)
+                attendance_seen = attendance
+            else:
+                context.model.add(boundary <= attendance)
+                context.model.add(boundary + attendance_seen <= 1)
+                context.model.add(boundary >= attendance - attendance_seen)
+                next_attendance_seen = context.model.new_bool_var(
+                    f"s20_{boundary_name}_date_seen__{source_rule_id}__{class_id}__{date_index}"
+                )
+                context.model.add_max_equality(
+                    next_attendance_seen,
+                    [attendance_seen, attendance],
+                )
+                attendance_seen = next_attendance_seen
+            boundary_variables.append(boundary)
+        return boundary_variables
+
+    def _add_edge_slot_variables(
+        self,
+        context: SolverContext,
+        source_rule_id: str,
+        class_id: str,
+        target_date: date,
+        ordered_period_ids: tuple[str, ...],
+        slots: list[cp_model.IntVar | None],
+        edge_name: str,
+    ) -> list[cp_model.IntVar]:
+        edge_variables: list[cp_model.IntVar] = []
+        seen: cp_model.IntVar | None = None
+        for index, (period_id, slot) in enumerate(zip(ordered_period_ids, slots, strict=True)):
+            edge = context.model.new_bool_var(
+                f"s20_{edge_name}_slot__{source_rule_id}__{class_id}__"
+                f"{target_date.isoformat()}__{period_id}"
+            )
+            if slot is None:
+                context.model.add(edge == 0)
+                edge_variables.append(edge)
+                continue
+            if seen is None:
+                context.model.add(edge == slot)
+                seen = slot
+            else:
+                context.model.add(edge <= slot)
+                context.model.add(edge + seen <= 1)
+                context.model.add(edge >= slot - seen)
+                next_seen = context.model.new_bool_var(
+                    f"s20_{edge_name}_seen__{source_rule_id}__{class_id}__"
+                    f"{target_date.isoformat()}__{index}"
+                )
+                context.model.add_max_equality(next_seen, [seen, slot])
+                seen = next_seen
+            edge_variables.append(edge)
+        return edge_variables
+
+
+class TeacherDayOffDistributionPreferenceConstraint:
+    """S21: prefer configured day-off counts while retaining H18 flexibility."""
+
+    rule_id = "S21"
+    priority = 34
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        penalty_groups = context.penalty_term_groups_by_priority.setdefault(self.priority, {})
+        for rule in context.teacher_day_off_rules:
+            if not rule.enabled or rule.preferred_days_off is None:
+                continue
+            variables = [
+                context.teacher_day_off_variables[(rule.teacher_id, target_date)]
+                for target_date in context.calendar_dates
+                if rule.start_date <= target_date <= rule.end_date
+            ]
+            deviation = context.model.new_int_var(
+                0,
+                len(variables),
+                f"teacher_day_off_preference__{rule.rule_id}",
+            )
+            context.model.add_abs_equality(
+                deviation,
+                sum(variables) - rule.preferred_days_off,
+            )
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(deviation)
+            penalty_groups.setdefault((rule.rule_id,), []).append(deviation)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassDailyContiguityPreferenceConstraint:
     """S11: minimize empty periods between one class's first and last lesson."""
 
@@ -632,6 +881,8 @@ class LessonCountInScopePreferenceConstraint:
 
 
 DEFAULT_SOFT_CONSTRAINTS = (
+    HomeroomBoundarySlotPreferenceConstraint(),
+    TeacherDayOffDistributionPreferenceConstraint(),
     RoomChangeGapPreferenceConstraint(),
     RoomPriorityPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
@@ -645,7 +896,9 @@ DEFAULT_SOFT_CONSTRAINTS = (
 )
 
 SoftConstraint = (
-    RoomChangeGapPreferenceConstraint
+    HomeroomBoundarySlotPreferenceConstraint
+    | TeacherDayOffDistributionPreferenceConstraint
+    | RoomChangeGapPreferenceConstraint
     | RoomPriorityPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
     | ClassSubjectDailyRepeatPreferenceConstraint

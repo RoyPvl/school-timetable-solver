@@ -10,6 +10,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from school_timetable_solver.model.input_models import (
     CalendarDayModel,
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     InputWorkbookSettingsModel,
     LessonCountPreferenceRuleSegmentModel,
@@ -78,7 +79,7 @@ class ExcelInputReaderAdapter:
             "enabled",
             "note",
         ),
-        "08_教科": ("subject_id", "subject_name", "enabled", "note"),
+        "08_教科": ("subject_id", "subject_name", "lesson_type", "enabled", "note"),
         "09_授業要求": (
             "requirement_id",
             "class_id",
@@ -150,6 +151,22 @@ class ExcelInputReaderAdapter:
             "start_date",
             "end_date",
             "required_days_off",
+            "minimum_days_off",
+            "maximum_days_off",
+            "preferred_days_off",
+            "quota_group_id",
+            "group_required_days_off",
+            "note",
+        ),
+        "16_担任授業期間ルール": (
+            "rule_id",
+            "rule_name",
+            "enabled",
+            "condition_field",
+            "condition_operator",
+            "condition_value",
+            "start_date",
+            "end_date",
             "note",
         ),
     }
@@ -224,6 +241,10 @@ class ExcelInputReaderAdapter:
             rows_by_sheet["15_教師休日日数ルール"],
             issues,
         )
+        homeroom_boundary_rules = self._read_homeroom_boundary_rules(
+            rows_by_sheet["16_担任授業期間ルール"],
+            issues,
+        )
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
         return InputReadResultModel(
@@ -242,6 +263,7 @@ class ExcelInputReaderAdapter:
                 lesson_count_rule_segments=tuple(lesson_count_rule_segments),
                 lesson_count_preference_rule_segments=tuple(lesson_count_preference_rule_segments),
                 teacher_day_off_rules=tuple(teacher_day_off_rules),
+                homeroom_boundary_rules=tuple(homeroom_boundary_rules),
             ),
             tuple(issues),
         )
@@ -340,7 +362,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.7":
+        if schema_version is not None and schema_version != "0.8":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -810,14 +832,16 @@ class ExcelInputReaderAdapter:
             values = (
                 self._text(row["subject_id"], "08_教科", row_number, "subject_id", issues),
                 self._subject_name(row["subject_name"], row_number, issues),
+                self._text(row["lesson_type"], "08_教科", row_number, "lesson_type", issues),
                 self._boolean(row["enabled"], "08_教科", row_number, "enabled", issues),
             )
             if None not in values:
-                subject_id, subject_name, enabled = values
+                subject_id, subject_name, lesson_type, enabled = values
                 assert subject_id is not None
                 assert subject_name is not None
+                assert lesson_type is not None
                 assert enabled is not None
-                result.append(SubjectModel(subject_id, subject_name, enabled))
+                result.append(SubjectModel(subject_id, subject_name, lesson_type, enabled))
         return result
 
     def _read_requirements(
@@ -948,23 +972,63 @@ class ExcelInputReaderAdapter:
                 self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
                 self._date(row["start_date"], sheet_name, row_number, "start_date", issues),
                 self._date(row["end_date"], sheet_name, row_number, "end_date", issues),
-                self._integer(
+                self._optional_integer(
                     row["required_days_off"],
                     sheet_name,
                     row_number,
                     "required_days_off",
                     issues,
                 ),
+                self._optional_integer(
+                    row["minimum_days_off"],
+                    sheet_name,
+                    row_number,
+                    "minimum_days_off",
+                    issues,
+                ),
+                self._optional_integer(
+                    row["maximum_days_off"],
+                    sheet_name,
+                    row_number,
+                    "maximum_days_off",
+                    issues,
+                ),
+                self._optional_integer(
+                    row["preferred_days_off"],
+                    sheet_name,
+                    row_number,
+                    "preferred_days_off",
+                    issues,
+                ),
+                self._optional_text(row["quota_group_id"]),
+                self._optional_integer(
+                    row["group_required_days_off"],
+                    sheet_name,
+                    row_number,
+                    "group_required_days_off",
+                    issues,
+                ),
             )
-            if None in values:
+            if None in values[:5]:
                 continue
-            rule_id, teacher_id, enabled, start_date, end_date, required_days_off = values
+            (
+                rule_id,
+                teacher_id,
+                enabled,
+                start_date,
+                end_date,
+                required_days_off,
+                minimum_days_off,
+                maximum_days_off,
+                preferred_days_off,
+                quota_group_id,
+                group_required_days_off,
+            ) = values
             assert isinstance(rule_id, str)
             assert isinstance(teacher_id, str)
             assert isinstance(enabled, bool)
             assert isinstance(start_date, date)
             assert isinstance(end_date, date)
-            assert isinstance(required_days_off, int)
             result.append(
                 TeacherDayOffRuleModel(
                     rule_id=rule_id,
@@ -973,6 +1037,48 @@ class ExcelInputReaderAdapter:
                     start_date=start_date,
                     end_date=end_date,
                     required_days_off=required_days_off,
+                    minimum_days_off=minimum_days_off,
+                    maximum_days_off=maximum_days_off,
+                    preferred_days_off=preferred_days_off,
+                    quota_group_id=quota_group_id,
+                    group_required_days_off=group_required_days_off,
+                )
+            )
+        return result
+
+    def _read_homeroom_boundary_rules(
+        self,
+        rows: list[tuple[int, dict[str, object]]],
+        issues: list[ValidationIssueModel],
+    ) -> list[HomeroomBoundaryRuleModel]:
+        sheet_name = "16_担任授業期間ルール"
+        result: list[HomeroomBoundaryRuleModel] = []
+        for row_number, row in rows:
+            values = (
+                self._text(row["rule_id"], sheet_name, row_number, "rule_id", issues),
+                self._text(row["rule_name"], sheet_name, row_number, "rule_name", issues),
+                self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
+                self._date(row["start_date"], sheet_name, row_number, "start_date", issues),
+                self._date(row["end_date"], sheet_name, row_number, "end_date", issues),
+            )
+            if None in values:
+                continue
+            rule_id, rule_name, enabled, start_date, end_date = values
+            assert isinstance(rule_id, str)
+            assert isinstance(rule_name, str)
+            assert isinstance(enabled, bool)
+            assert isinstance(start_date, date)
+            assert isinstance(end_date, date)
+            result.append(
+                HomeroomBoundaryRuleModel(
+                    rule_id=rule_id,
+                    rule_name=rule_name,
+                    enabled=enabled,
+                    condition_fields=self._pipe(row["condition_field"]),
+                    condition_operators=self._pipe(row["condition_operator"]),
+                    condition_values=self._pipe(row["condition_value"]),
+                    start_date=start_date,
+                    end_date=end_date,
                 )
             )
         return result

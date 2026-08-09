@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date
+from itertools import pairwise
 
 from school_timetable_solver.model.input_models import (
     CalendarDayModel,
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    LessonRequirementModel,
     PlacementRuleModel,
 )
 from school_timetable_solver.model.master_models import ClassModel, TeacherModel
@@ -17,6 +20,7 @@ from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     EffectiveClassDateRuleModel,
     EffectiveTeacherDateRuleModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
     ResolvedRuleSetModel,
@@ -201,12 +205,118 @@ class RuleResolverService:
             period_ids,
             issues,
         )
+        homeroom_boundary_rules = self._resolve_homeroom_boundary_rules(input_data, issues)
         return ResolvedRuleSetModel(
             class_date_rules=tuple(class_rules),
             teacher_date_rules=tuple(teacher_rules),
             issues=tuple(issues),
             lesson_count_rules=tuple(lesson_count_rules),
             lesson_count_preference_rules=tuple(lesson_count_preference_rules),
+            homeroom_boundary_rules=tuple(homeroom_boundary_rules),
+        )
+
+    def _resolve_homeroom_boundary_rules(
+        self,
+        input_data: InputDataModel,
+        issues: list[RuleResolutionIssueModel],
+    ) -> list[ResolvedHomeroomBoundaryRuleModel]:
+        regular_subject_ids = {
+            subject.subject_id
+            for subject in input_data.subjects
+            if subject.enabled and subject.lesson_type == "regular"
+        }
+        requirements_by_class: dict[str, list[LessonRequirementModel]] = defaultdict(list)
+        for requirement in input_data.lesson_requirements:
+            if requirement.enabled:
+                requirements_by_class[requirement.class_id].append(requirement)
+
+        resolved: list[ResolvedHomeroomBoundaryRuleModel] = []
+        for rule in input_data.homeroom_boundary_rules:
+            if not rule.enabled:
+                continue
+            matched_count = 0
+            for class_model in input_data.classes:
+                if not class_model.enabled:
+                    continue
+                attendance_requirement_ids = tuple(
+                    requirement.requirement_id
+                    for requirement in requirements_by_class[class_model.class_id]
+                    if requirement.subject_id in regular_subject_ids
+                )
+                eligible_requirement_ids = tuple(
+                    requirement.requirement_id
+                    for requirement in requirements_by_class[class_model.class_id]
+                    if requirement.teacher_id == class_model.homeroom_teacher_id
+                    and requirement.subject_id in regular_subject_ids
+                )
+                attributes = {
+                    "class_id": class_model.class_id,
+                    "division": class_model.division,
+                    "grade": class_model.grade,
+                    "exam_category": class_model.exam_category,
+                    "campus_id": class_model.campus_id,
+                    "has_regular_homeroom_lesson": bool(eligible_requirement_ids),
+                }
+                if not self._matches_boundary_rule(rule, attributes):
+                    continue
+                matched_count += 1
+                if class_model.homeroom_teacher_id is None or not eligible_requirement_ids:
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "HOMEROOM_BOUNDARY_TARGET_UNRESOLVED",
+                            f"{rule.rule_id}/{class_model.class_id}",
+                            "担任と、その担任が担当する通常授業を解決できません",
+                        )
+                    )
+                    continue
+                resolved.append(
+                    ResolvedHomeroomBoundaryRuleModel(
+                        source_rule_id=rule.rule_id,
+                        class_id=class_model.class_id,
+                        campus_id=class_model.campus_id,
+                        teacher_id=class_model.homeroom_teacher_id,
+                        attendance_requirement_ids=attendance_requirement_ids,
+                        eligible_requirement_ids=eligible_requirement_ids,
+                        start_date=rule.start_date,
+                        end_date=rule.end_date,
+                    )
+                )
+            if matched_count == 0:
+                issues.append(
+                    RuleResolutionIssueModel(
+                        "HOMEROOM_BOUNDARY_TARGET_EMPTY",
+                        rule.rule_id,
+                        "担任授業期間ルールに一致する有効クラスがありません",
+                    )
+                )
+
+        rules_by_class: dict[str, list[ResolvedHomeroomBoundaryRuleModel]] = defaultdict(list)
+        for rule in resolved:
+            rules_by_class[rule.class_id].append(rule)
+        for class_id, class_rules in rules_by_class.items():
+            ordered_rules = sorted(class_rules, key=lambda item: (item.start_date, item.end_date))
+            for left, right in pairwise(ordered_rules):
+                if right.start_date <= left.end_date:
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "HOMEROOM_BOUNDARY_PERIOD_OVERLAP",
+                            class_id,
+                            (
+                                "担任授業期間ルールの期間が重複しています: "
+                                f"{left.source_rule_id}/{right.source_rule_id}"
+                            ),
+                        )
+                    )
+        return resolved
+
+    def _matches_boundary_rule(
+        self,
+        rule: HomeroomBoundaryRuleModel,
+        attributes: dict[str, object],
+    ) -> bool:
+        return self._matches_conditions(
+            rule,
+            attributes,
         )
 
     def _resolve_lesson_count_rules(
@@ -384,7 +494,7 @@ class RuleResolverService:
 
     def _matches_conditions(
         self,
-        rule: PlacementRuleModel,
+        rule: PlacementRuleModel | HomeroomBoundaryRuleModel,
         attributes: dict[str, object],
     ) -> bool:
         if not (
@@ -404,7 +514,7 @@ class RuleResolverService:
         )
 
     def _matches_value(self, actual: object, operator: str, expected: str) -> bool:
-        actual_text = str(actual)
+        actual_text = str(actual).upper() if isinstance(actual, bool) else str(actual)
         if operator == "eq":
             return actual_text == expected
         if operator == "ne":

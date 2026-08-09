@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from itertools import pairwise
 from types import MappingProxyType
 
-from school_timetable_solver.model.input_models import InputDataModel
+from school_timetable_solver.model.input_models import InputDataModel, TeacherDayOffRuleModel
 from school_timetable_solver.model.result_models import (
     CampusColumnGroupModel,
     DailyTimetableModel,
@@ -93,6 +93,7 @@ class ValidateResultService:
         issues: list[ValidationIssueModel] = []
         self._validate_required_counts(input_data, lessons, issues)
         self._validate_lesson_counts_in_scope(resolved_rules, lessons, issues)
+        self._validate_homeroom_attendance_boundaries(resolved_rules, lessons, issues)
         self._validate_overlaps(lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
@@ -100,6 +101,11 @@ class ValidateResultService:
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
         self._validate_single_campus_per_day(lessons, issues)
         self._validate_teacher_day_offs(input_data, lessons, teacher_day_offs, issues)
+        self._report_teacher_day_off_distribution_preference(
+            input_data,
+            teacher_day_offs,
+            issues,
+        )
         self._validate_teacher_leave_annotation_capacity(
             input_data,
             teacher_day_offs,
@@ -108,6 +114,12 @@ class ValidateResultService:
         self._validate_class_room_continuity(lessons, issues)
         self._validate_class_long_internal_gaps(input_data, lessons, issues)
         self._report_room_priority_preference(input_data, lessons, issues)
+        self._report_homeroom_boundary_slot_preference(
+            input_data,
+            resolved_rules,
+            lessons,
+            issues,
+        )
         self._report_room_change_gap_preference(input_data, lessons, issues)
         self._report_class_daily_contiguity_preference(input_data, lessons, issues)
         self._report_class_consecutive_attendance_preference(
@@ -180,17 +192,82 @@ class ValidateResultService:
                 )
                 if rule.start_date <= target_date <= rule.end_date
             )
-            if actual != rule.required_days_off:
+            count_is_valid = (
+                actual == rule.required_days_off
+                if rule.required_days_off is not None
+                else (
+                    rule.minimum_days_off is not None
+                    and rule.maximum_days_off is not None
+                    and rule.minimum_days_off <= actual <= rule.maximum_days_off
+                )
+            )
+            if not count_is_valid:
                 issues.append(
                     self._issue(
                         "H18",
                         rule.rule_id,
                         (
-                            "期間内の教師休日日数が一致しません: "
-                            f"actual={actual}, required={rule.required_days_off}"
+                            "期間内の教師休日日数が条件を満たしません: "
+                            f"actual={actual}, required={rule.required_days_off}, "
+                            f"minimum={rule.minimum_days_off}, maximum={rule.maximum_days_off}"
                         ),
                     )
                 )
+
+        rules_by_group: dict[tuple[str, str], list[TeacherDayOffRuleModel]] = defaultdict(list)
+        for rule in input_data.teacher_day_off_rules:
+            if rule.enabled and rule.quota_group_id is not None:
+                rules_by_group[(rule.teacher_id, rule.quota_group_id)].append(rule)
+        for (teacher_id, group_id), rules in rules_by_group.items():
+            actual = sum(
+                (teacher_id, target_date) in selected_slots
+                for rule in rules
+                for target_date in (
+                    day.target_date for day in input_data.calendar_days if day.output_enabled
+                )
+                if rule.start_date <= target_date <= rule.end_date
+            )
+            required = rules[0].group_required_days_off
+            if actual != required:
+                issues.append(
+                    self._issue(
+                        "H18",
+                        group_id,
+                        f"教師休日グループ合計が一致しません: actual={actual}, required={required}",
+                    )
+                )
+
+    def _report_teacher_day_off_distribution_preference(
+        self,
+        input_data: InputDataModel,
+        teacher_day_offs: tuple[ScheduledTeacherDayOffModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        selected_slots = {(day_off.teacher_id, day_off.target_date) for day_off in teacher_day_offs}
+        output_dates = tuple(
+            day.target_date for day in input_data.calendar_days if day.output_enabled
+        )
+        for rule in input_data.teacher_day_off_rules:
+            if not rule.enabled or rule.preferred_days_off is None:
+                continue
+            actual = sum(
+                (rule.teacher_id, target_date) in selected_slots
+                for target_date in output_dates
+                if rule.start_date <= target_date <= rule.end_date
+            )
+            if actual == rule.preferred_days_off:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S21",
+                    "WARNING",
+                    rule.rule_id,
+                    (
+                        "期間内の教師休日日数が希望値と異なります: "
+                        f"actual={actual}, preferred={rule.preferred_days_off}"
+                    ),
+                )
+            )
 
     def _validate_teacher_leave_annotation_capacity(
         self,
@@ -484,6 +561,116 @@ class ValidateResultService:
                             "教師勤務パターン上限超過: "
                             f"occupied_periods={occupied_periods}, limit={limit}"
                         ),
+                    )
+                )
+
+    def _validate_homeroom_attendance_boundaries(
+        self,
+        resolved_rules: ResolvedRuleSetModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        for rule in resolved_rules.homeroom_boundary_rules:
+            attendance_requirement_ids = set(rule.attendance_requirement_ids)
+            period_lessons = [
+                lesson
+                for lesson in lessons
+                if lesson.class_id == rule.class_id
+                and rule.start_date <= lesson.target_date <= rule.end_date
+                and lesson.requirement_id in attendance_requirement_ids
+            ]
+            target = f"{rule.source_rule_id}/{rule.class_id}"
+            if not period_lessons:
+                issues.append(
+                    ValidationIssueModel(
+                        "H20",
+                        "ERROR",
+                        target,
+                        "対象期間内にクラス授業がありません",
+                    )
+                )
+                continue
+            boundary_dates = {
+                min(lesson.target_date for lesson in period_lessons),
+                max(lesson.target_date for lesson in period_lessons),
+            }
+            eligible_requirement_ids = set(rule.eligible_requirement_ids)
+            for boundary_date in sorted(boundary_dates):
+                if not any(
+                    lesson.target_date == boundary_date
+                    and lesson.requirement_id in eligible_requirement_ids
+                    for lesson in period_lessons
+                ):
+                    issues.append(
+                        ValidationIssueModel(
+                            "H20",
+                            "ERROR",
+                            f"{target}/{boundary_date}",
+                            "実際の初回・最終登校日に担任の通常授業がありません",
+                        )
+                    )
+
+    def _report_homeroom_boundary_slot_preference(
+        self,
+        input_data: InputDataModel,
+        resolved_rules: ResolvedRuleSetModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        for rule in resolved_rules.homeroom_boundary_rules:
+            class_period_lessons = [
+                lesson
+                for lesson in lessons
+                if lesson.class_id == rule.class_id
+                and rule.start_date <= lesson.target_date <= rule.end_date
+            ]
+            attendance_requirement_ids = set(rule.attendance_requirement_ids)
+            attendance_lessons = [
+                lesson
+                for lesson in class_period_lessons
+                if lesson.requirement_id in attendance_requirement_ids
+            ]
+            if not attendance_lessons:
+                continue
+            first_date = min(lesson.target_date for lesson in attendance_lessons)
+            last_date = max(lesson.target_date for lesson in attendance_lessons)
+            eligible_requirement_ids = set(rule.eligible_requirement_ids)
+            checks = (
+                (
+                    "first",
+                    first_date,
+                    min(
+                        (
+                            lesson
+                            for lesson in class_period_lessons
+                            if lesson.target_date == first_date
+                        ),
+                        key=lambda item: period_orders[item.period_id],
+                    ),
+                ),
+                (
+                    "last",
+                    last_date,
+                    max(
+                        (
+                            lesson
+                            for lesson in class_period_lessons
+                            if lesson.target_date == last_date
+                        ),
+                        key=lambda item: period_orders[item.period_id],
+                    ),
+                ),
+            )
+            for boundary_name, boundary_date, edge_lesson in checks:
+                if edge_lesson.requirement_id in eligible_requirement_ids:
+                    continue
+                issues.append(
+                    ValidationIssueModel(
+                        "S20",
+                        "WARNING",
+                        f"{rule.source_rule_id}/{rule.class_id}/{boundary_date}/{boundary_name}",
+                        "境界日の最初または最後の授業が担任の通常授業ではありません",
                     )
                 )
 

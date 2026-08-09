@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from datetime import date
+from time import perf_counter
 
 from ortools.sat.python import cp_model
 
@@ -29,6 +30,7 @@ class TimetableSolverService:
     """Build and solve one deterministic strict CP-SAT model."""
 
     _LOWER_PRIORITY_TOTAL_RESERVE_RATIO = 0.75
+    _HOMEROOM_INITIAL_FEASIBILITY_RATIO = 0.60
     _PRELIMINARY_DEFERRED_HARD_RULE_IDS = frozenset({"H16"})
 
     def __init__(
@@ -66,10 +68,16 @@ class TimetableSolverService:
             )
         else:
             for constraint in self._hard_constraints:
-                constraint.apply(context)
+                self._apply_constraint(context, constraint, "hard_only")
             LOGGER.info(
-                "Solverフェーズ開始 phase=hard_only max_seconds=%f",
+                (
+                    "Solverフェーズ開始 phase=hard_only max_seconds=%f "
+                    "variables=%d constraints=%d hints=%d"
+                ),
                 request.max_solve_seconds,
+                len(context.model.proto.variables),
+                len(context.model.proto.constraints),
+                len(context.model.proto.solution_hint.vars),
             )
             solver = self._new_solver(request, request.max_solve_seconds)
             status = solver.status_name(solver.solve(context.model))
@@ -79,6 +87,7 @@ class TimetableSolverService:
                 status,
                 solver.wall_time,
             )
+            self._log_search_statistics("hard_only", solver)
 
         lessons: list[ScheduledLessonDraftModel] = []
         if solver is not None and status in {"OPTIMAL", "FEASIBLE"}:
@@ -218,6 +227,7 @@ class TimetableSolverService:
             teacher_home_campuses=teacher_home_campuses,
             fixed_teacher_leave_cell_counts=dict(fixed_teacher_leave_cell_counts),
             lesson_count_preference_rules=resolved_rules.lesson_count_preference_rules,
+            homeroom_boundary_rules=resolved_rules.homeroom_boundary_rules,
         )
         return context, variables
 
@@ -236,7 +246,7 @@ class TimetableSolverService:
         ]
         for constraint in self._hard_constraints:
             if constraint.rule_id not in self._PRELIMINARY_DEFERRED_HARD_RULE_IDS:
-                constraint.apply(context)
+                self._apply_constraint(context, constraint, "preliminary_feasibility")
 
         assignment_priorities = {
             constraint.priority
@@ -251,9 +261,13 @@ class TimetableSolverService:
             len(priorities) - 1,
             lower_priority_reserve_ratio,
         )
+        if context.homeroom_boundary_rules:
+            first_phase_seconds = max(
+                first_phase_seconds,
+                request.max_solve_seconds * self._HOMEROOM_INITIAL_FEASIBILITY_RATIO,
+            )
         preliminary_solver: cp_model.CpSolver | None = None
         preliminary_status = "SKIPPED"
-        preliminary_variable_count = 0
         total_wall_time = 0.0
         if deferred_hard_constraints:
             deferred_rule_ids = ",".join(
@@ -262,12 +276,14 @@ class TimetableSolverService:
             LOGGER.info(
                 (
                     "Solverフェーズ開始 phase=preliminary_feasibility "
-                    "deferred_rule_ids=%s max_seconds=%f"
+                    "deferred_rule_ids=%s max_seconds=%f variables=%d constraints=%d hints=%d"
                 ),
                 deferred_rule_ids,
                 first_phase_seconds,
+                len(context.model.proto.variables),
+                len(context.model.proto.constraints),
+                len(context.model.proto.solution_hint.vars),
             )
-            preliminary_variable_count = len(context.model.proto.variables)
             preliminary_solver = self._new_solver(request, first_phase_seconds)
             preliminary_status = preliminary_solver.status_name(
                 preliminary_solver.solve(context.model)
@@ -282,14 +298,16 @@ class TimetableSolverService:
                 preliminary_status,
                 preliminary_solver.wall_time,
             )
+            self._log_search_statistics("preliminary_feasibility", preliminary_solver)
+            if preliminary_status not in {"OPTIMAL", "FEASIBLE"}:
+                return preliminary_solver, preliminary_status, total_wall_time
 
         for rule_index, constraint in deferred_hard_constraints:
-            constraint.apply(context)
+            self._apply_constraint(context, constraint, "initial_feasibility")
             applied_rule_id = context.applied_rule_ids.pop()
             context.applied_rule_ids.insert(rule_index, applied_rule_id)
         if preliminary_solver is not None and preliminary_status in {"OPTIMAL", "FEASIBLE"}:
-            for variable_index in range(preliminary_variable_count):
-                variable = context.model.get_int_var_from_proto_index(variable_index)
+            for variable in variables.values():
                 context.model.add_hint(variable, preliminary_solver.value(variable))
 
         initial_feasibility_seconds = max(
@@ -297,8 +315,13 @@ class TimetableSolverService:
             0.001,
         )
         LOGGER.info(
-            "Solverフェーズ開始 phase=initial_feasibility max_seconds=%f hints=%d",
+            (
+                "Solverフェーズ開始 phase=initial_feasibility max_seconds=%f "
+                "variables=%d constraints=%d hints=%d"
+            ),
             initial_feasibility_seconds,
+            len(context.model.proto.variables),
+            len(context.model.proto.constraints),
             len(context.model.proto.solution_hint.vars),
         )
         initial_solver = self._new_solver(request, initial_feasibility_seconds)
@@ -313,6 +336,9 @@ class TimetableSolverService:
             initial_solver.wall_time,
             total_wall_time,
         )
+        self._log_search_statistics("initial_feasibility", initial_solver)
+        if initial_status not in {"OPTIMAL", "FEASIBLE"}:
+            return initial_solver, initial_status, total_wall_time
 
         hint_solver = initial_solver if initial_status in {"OPTIMAL", "FEASIBLE"} else None
         solved_variable_count = len(context.model.proto.variables) if hint_solver is not None else 0
@@ -325,7 +351,7 @@ class TimetableSolverService:
         for priority_index, priority in enumerate(priorities):
             priority_constraints = soft_constraints_by_priority[priority]
             for constraint in priority_constraints:
-                constraint.apply(context)
+                self._apply_constraint(context, constraint, f"soft_{priority}")
             priority_terms = context.penalty_terms_by_priority.get(priority, [])
             context.model.minimize(sum(priority_terms))
             context.model.clear_hints()
@@ -347,10 +373,15 @@ class TimetableSolverService:
             )
             rule_ids = ",".join(constraint.rule_id for constraint in priority_constraints)
             LOGGER.info(
-                ("Solverフェーズ開始 phase=soft priority=%d rule_ids=%s max_seconds=%f hints=%d"),
+                (
+                    "Solverフェーズ開始 phase=soft priority=%d rule_ids=%s "
+                    "max_seconds=%f variables=%d constraints=%d hints=%d"
+                ),
                 priority,
                 rule_ids,
                 phase_seconds,
+                len(context.model.proto.variables),
+                len(context.model.proto.constraints),
                 len(context.model.proto.solution_hint.vars),
             )
             phase_solver = self._new_solver(request, phase_seconds)
@@ -367,6 +398,7 @@ class TimetableSolverService:
                 phase_solver.wall_time,
                 total_wall_time,
             )
+            self._log_search_statistics(f"soft_{priority}", phase_solver)
             remaining_seconds = max(
                 request.max_solve_seconds - total_wall_time,
                 0.001,
@@ -395,6 +427,44 @@ class TimetableSolverService:
         if len(priorities) > 1 and status == "OPTIMAL":
             status = "FEASIBLE"
         return solver, status, total_wall_time
+
+    def _apply_constraint(
+        self,
+        context: SolverContext,
+        constraint: HardConstraint | SoftConstraint,
+        phase: str,
+    ) -> None:
+        variable_count_before = len(context.model.proto.variables)
+        constraint_count_before = len(context.model.proto.constraints)
+        started_at = perf_counter()
+        constraint.apply(context)
+        LOGGER.info(
+            (
+                "Solver制約追加 phase=%s rule_id=%s elapsed=%f "
+                "variables_added=%d constraints_added=%d variables_total=%d constraints_total=%d"
+            ),
+            phase,
+            constraint.rule_id,
+            perf_counter() - started_at,
+            len(context.model.proto.variables) - variable_count_before,
+            len(context.model.proto.constraints) - constraint_count_before,
+            len(context.model.proto.variables),
+            len(context.model.proto.constraints),
+        )
+
+    def _log_search_statistics(self, phase: str, solver: cp_model.CpSolver) -> None:
+        LOGGER.info(
+            "Solver探索統計 phase=%s conflicts=%d branches=%d",
+            phase,
+            self._solver_integer_metric(solver, "num_conflicts"),
+            self._solver_integer_metric(solver, "num_branches"),
+        )
+
+    def _solver_integer_metric(self, solver: cp_model.CpSolver, name: str) -> int:
+        try:
+            return int(getattr(solver, name))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return -1
 
     def _priority_phase_seconds(
         self,

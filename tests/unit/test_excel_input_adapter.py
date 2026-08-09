@@ -10,17 +10,18 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_7_with_empty_optional_rows() -> None:
+def test_reader_accepts_contract_v0_8_with_empty_optional_rows() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.7"
+    assert result.input_data.settings.schema_version == "0.8"
     assert len(result.input_data.periods) == 6
     assert result.input_data.teachers[0].home_campus_id == "C1"
     assert not result.input_data.teacher_leaves
     assert not result.input_data.lesson_count_rule_segments
     assert not result.input_data.lesson_count_preference_rule_segments
+    assert not result.input_data.homeroom_boundary_rules
     room_priorities = {room.room_id: room.priority for room in result.input_data.rooms}
     assert room_priorities == {"R1": 0, "R2": 100, "R3": 100, "R4": 0}
     exam_rule = next(
@@ -84,7 +85,7 @@ def test_reader_normalizes_empty_subject_name_to_empty_string(
 ) -> None:
     workbook = load_workbook(SAMPLE)
     workbook["08_教科"].append(
-        ("S_BLANK", None, True, "表示名が空白の教科"),
+        ("S_BLANK", None, "other", True, "表示名が空白の教科"),
     )
     target = tmp_path / "blank-subject-name.xlsx"
     workbook.save(target)
@@ -163,6 +164,11 @@ def test_reader_reads_teacher_day_off_rules(tmp_path: Path) -> None:
             date(2026, 7, 27),
             date(2026, 7, 29),
             1,
+            None,
+            None,
+            None,
+            None,
+            None,
             "期間内に終日休み1日",
         )
     )
@@ -176,6 +182,34 @@ def test_reader_reads_teacher_day_off_rules(tmp_path: Path) -> None:
     assert rule.rule_id == "DAY_OFF_T1_EARLY"
     assert rule.teacher_id == "T1"
     assert rule.required_days_off == 1
+    assert rule.minimum_days_off is None
+
+
+def test_reader_reads_homeroom_boundary_rules(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["16_担任授業期間ルール"].append(
+        (
+            "HB1",
+            "夏期前半",
+            True,
+            "division|has_regular_homeroom_lesson",
+            "in|eq",
+            "elementary/junior_high|TRUE",
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+            "担任の通常授業を期間端に配置",
+        )
+    )
+    target = tmp_path / "homeroom-boundary-rules.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    rule = result.input_data.homeroom_boundary_rules[0]
+    assert rule.rule_id == "HB1"
+    assert rule.condition_fields == ("division", "has_regular_homeroom_lesson")
+    assert rule.start_date == date(2026, 7, 27)
 
 
 def test_operation_sheet_needs_no_header_and_preference_rows_are_ignored(

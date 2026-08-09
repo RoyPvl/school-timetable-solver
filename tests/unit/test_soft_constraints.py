@@ -6,6 +6,7 @@ from ortools.sat.python import cp_model
 
 from school_timetable_solver.constraint.hard_constraints import (
     ClassRoomContinuityConstraint,
+    HomeroomAttendanceBoundaryConstraint,
 )
 from school_timetable_solver.constraint.soft_constraints import (
     ClassConsecutiveAttendancePreferenceConstraint,
@@ -15,13 +16,17 @@ from school_timetable_solver.constraint.soft_constraints import (
     ClassSubjectDailyRepeatPreferenceConstraint,
     ClassSubjectDoubleThenNextDayPreferenceConstraint,
     ClassSubjectScheduleBalancePreferenceConstraint,
+    HomeroomBoundarySlotPreferenceConstraint,
     LessonCountInScopePreferenceConstraint,
     RoomChangeGapPreferenceConstraint,
     RoomPriorityPreferenceConstraint,
+    TeacherDayOffDistributionPreferenceConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
+from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
 )
 
@@ -116,6 +121,77 @@ def test_s19_treats_rooms_with_equal_priority_equally() -> None:
 
     assert status == "OPTIMAL"
     assert solver.objective_value == 0
+
+
+def _solve_s20(home_period_id: str) -> float:
+    candidates = tuple(
+        CandidateSlotModel(
+            f"{requirement_id}__{period_id}",
+            requirement_id,
+            TARGET_DATE,
+            period_id,
+            "T1" if requirement_id == "Q_HOME" else "T2",
+            "C1",
+            "CL1",
+            "S1",
+        )
+        for requirement_id in ("Q_HOME", "Q_OTHER")
+        for period_id in ("P1", "P2", "P3")
+    )
+    model = cp_model.CpModel()
+    context = SolverContext(
+        model=model,
+        candidates=candidates,
+        assignment_variables={
+            candidate.candidate_id: model.new_bool_var(candidate.candidate_id)
+            for candidate in candidates
+        },
+        required_counts={"Q_HOME": 1, "Q_OTHER": 2},
+        room_capacities={"C1": 1},
+        class_daily_limits={("CL1", TARGET_DATE): 6},
+        requirement_daily_limits={"Q_HOME": None, "Q_OTHER": None},
+        teacher_daily_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
+        teacher_consecutive_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
+        class_attendance_limits={("CL1", TARGET_DATE): 6},
+        period_orders={"P1": 1, "P2": 2, "P3": 3},
+        calendar_dates=(TARGET_DATE,),
+        homeroom_boundary_rules=(
+            ResolvedHomeroomBoundaryRuleModel(
+                "HB1",
+                "CL1",
+                "C1",
+                "T1",
+                ("Q_HOME", "Q_OTHER"),
+                ("Q_HOME",),
+                TARGET_DATE,
+                TARGET_DATE,
+            ),
+        ),
+    )
+    ClassRoomContinuityConstraint().apply(context)
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+    assert not context.homeroom_first_date_variables
+    assert not context.homeroom_last_date_variables
+    preference = HomeroomBoundarySlotPreferenceConstraint()
+    preference.apply(context)
+    assert context.homeroom_first_date_variables
+    assert context.homeroom_last_date_variables
+    for candidate in candidates:
+        selected = (
+            candidate.period_id == home_period_id
+            if candidate.requirement_id == "Q_HOME"
+            else candidate.period_id != home_period_id
+        )
+        model.add(context.assignment_variables[candidate.candidate_id] == int(selected))
+    model.minimize(sum(context.penalty_terms_by_priority[preference.priority]))
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "OPTIMAL"
+    return solver.objective_value
+
+
+def test_s20_prefers_homeroom_lesson_at_first_or_last_class_slot() -> None:
+    assert _solve_s20("P1") == 1
+    assert _solve_s20("P2") == 2
 
 
 def _solve_class_day_preference(
@@ -570,7 +646,66 @@ def test_s18_calendar_gap_breaks_the_attendance_streak() -> None:
     assert solver.objective_value == 0
 
 
+def test_s21_prefers_three_early_and_one_late_day_off() -> None:
+    context = _context(room_capacity=1)
+    early_dates = tuple(TARGET_DATE + timedelta(days=offset) for offset in range(3))
+    late_dates = tuple(TARGET_DATE + timedelta(days=10 + offset) for offset in range(2))
+    context.calendar_dates = early_dates + late_dates
+    context.teacher_day_off_variables = {
+        ("T1", target_date): context.model.new_bool_var(f"off_{target_date}")
+        for target_date in context.calendar_dates
+    }
+    context.teacher_day_off_rules = (
+        TeacherDayOffRuleModel(
+            "EARLY",
+            "T1",
+            True,
+            early_dates[0],
+            early_dates[-1],
+            None,
+            2,
+            3,
+            "SUMMER",
+            4,
+            3,
+        ),
+        TeacherDayOffRuleModel(
+            "LATE",
+            "T1",
+            True,
+            late_dates[0],
+            late_dates[-1],
+            None,
+            1,
+            2,
+            "SUMMER",
+            4,
+            1,
+        ),
+    )
+    early_variables = [context.teacher_day_off_variables[("T1", day)] for day in early_dates]
+    late_variables = [context.teacher_day_off_variables[("T1", day)] for day in late_dates]
+    context.model.add(sum(early_variables) >= 2)
+    context.model.add(sum(early_variables) <= 3)
+    context.model.add(sum(late_variables) >= 1)
+    context.model.add(sum(late_variables) <= 2)
+    context.model.add(sum(early_variables) + sum(late_variables) == 4)
+    constraint = TeacherDayOffDistributionPreferenceConstraint()
+    constraint.apply(context)
+    context.model.minimize(sum(context.penalty_terms_by_priority[constraint.priority]))
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert sum(solver.value(variable) for variable in early_variables) == 3
+    assert sum(solver.value(variable) for variable in late_variables) == 1
+
+
 def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> None:
+    assert (
+        HomeroomBoundarySlotPreferenceConstraint.priority
+        > TeacherDayOffDistributionPreferenceConstraint.priority
+        > ClassSubjectDailyRepeatPreferenceConstraint.priority
+    )
     assert (
         ClassSubjectDailyRepeatPreferenceConstraint.priority
         > ClassSubjectDoubleThenNextDayPreferenceConstraint.priority

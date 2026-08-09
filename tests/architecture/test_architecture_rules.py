@@ -105,6 +105,7 @@ def test_hard_constraint_registration_has_unique_formal_rule_ids() -> None:
         "H17",
         "H18",
         "H19",
+        "H20",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_HARD_CONSTRAINTS)
 
@@ -123,5 +124,7 @@ def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
         "S17",
         "S18",
         "S19",
+        "S20",
+        "S21",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)

@@ -67,8 +67,8 @@ def minimal_input_data() -> InputDataModel:
             ClassModel("CL2", "中学B", "C2", "junior_high", 3, "exam", "T2", True),
         ),
         subjects=(
-            SubjectModel("S1", "算数", True),
-            SubjectModel("S2", "英語", True),
+            SubjectModel("S1", "算数", "regular", True),
+            SubjectModel("S2", "英語", "regular", True),
         ),
         lesson_requirements=(
             LessonRequirementModel("Q1", "CL1", "S1", "T1", 2, 1, True),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from itertools import product
 
 import pytest
 from ortools.sat.python import cp_model
@@ -11,6 +12,7 @@ from school_timetable_solver.constraint.hard_constraints import (
     ClassOverlapConstraint,
     ClassRoomContinuityConstraint,
     ConsecutiveAttendanceConstraint,
+    HomeroomAttendanceBoundaryConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
     TeacherConsecutivePeriodConstraint,
@@ -23,6 +25,7 @@ from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountRuleModel,
 )
 
@@ -163,6 +166,32 @@ def test_h18_selects_exact_full_day_off_and_forbids_work_on_that_day() -> None:
     assert solver.value(context.teacher_day_off_variables[("T1", DAY_TWO)]) == 1
 
 
+def test_h18_allows_three_one_or_two_two_with_group_total() -> None:
+    day_three = date(2026, 7, 30)
+    day_four = date(2026, 7, 31)
+    candidates = tuple(
+        _candidate(f"Q1__{index}", "T1", target_date, "C1", "P1")
+        for index, target_date in enumerate((DAY_ONE, DAY_TWO, day_three, day_four), start=1)
+    )
+    context = _context(candidates)
+    context.calendar_dates = (DAY_ONE, DAY_TWO, day_three, day_four)
+    context.teacher_day_off_rules = (
+        TeacherDayOffRuleModel("EARLY", "T1", True, DAY_ONE, DAY_TWO, None, 1, 2, "SUMMER", 3),
+        TeacherDayOffRuleModel("LATE", "T1", True, day_three, day_four, None, 1, 2, "SUMMER", 3),
+    )
+    TeacherDayOffQuotaConstraint().apply(context)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert (
+        sum(
+            solver.value(context.teacher_day_off_variables[("T1", target_date)])
+            for target_date in context.calendar_dates
+        )
+        == 3
+    )
+
+
 def test_h19_rejects_leave_annotations_beyond_campus_room_columns() -> None:
     context = _context(())
     context.room_capacities["C1"] = 1
@@ -210,6 +239,143 @@ def test_h17_lesson_count_in_scope_requires_exact_count() -> None:
     solver = cp_model.CpSolver()
 
     assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+
+
+def test_h20_requires_homeroom_regular_lesson_on_actual_first_and_last_attendance_days() -> None:
+    candidates = (
+        _candidate("Q_HOME__D1", "T1", DAY_ONE, "C1", "P2"),
+        _candidate("Q_OTHER__D1", "T2", DAY_ONE, "C1", "P1"),
+        _candidate("Q_HOME__D2", "T1", DAY_TWO, "C1", "P2"),
+        _candidate("Q_OTHER__D2", "T2", DAY_TWO, "C1", "P3"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1", "CL1", "C1", "T1", ("Q_HOME", "Q_OTHER"), ("Q_HOME",), DAY_ONE, DAY_TWO
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
+
+
+def test_h20_rejects_boundary_attendance_day_without_homeroom_regular_lesson() -> None:
+    candidates = (
+        _candidate("Q_HOME__D1", "T1", DAY_ONE, "C1", "P2"),
+        _candidate("Q_OTHER__D2", "T2", DAY_TWO, "C1", "P3"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1", "CL1", "C1", "T1", ("Q_HOME", "Q_OTHER"), ("Q_HOME",), DAY_ONE, DAY_TWO
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h20_excludes_special_lessons_from_first_and_last_day_detection() -> None:
+    candidates = (
+        _candidate("Q_SPECIAL__D1", "T2", DAY_ONE, "C1", "P3"),
+        _candidate("Q_HOME__D2", "T1", DAY_TWO, "C1", "P1"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1", "CL1", "C1", "T1", ("Q_HOME",), ("Q_HOME",), DAY_ONE, DAY_TWO
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
+
+
+def test_h20_compact_encoding_matches_boundary_rule_for_all_patterns_up_to_six_days() -> None:
+    for day_count in range(1, 7):
+        target_dates = tuple(date(2026, 7, 20 + index) for index in range(day_count))
+        candidates = tuple(
+            _candidate(
+                f"{requirement_id}__D{date_index}",
+                "T1" if requirement_id == "Q_HOME" else "T2",
+                target_date,
+                "C1",
+                "P1",
+            )
+            for date_index, target_date in enumerate(target_dates)
+            for requirement_id in ("Q_HOME", "Q_OTHER")
+        )
+        for pattern in product((0, 1, 2), repeat=day_count):
+            context = _context(candidates)
+            context.calendar_dates = target_dates
+            context.homeroom_boundary_rules = (
+                ResolvedHomeroomBoundaryRuleModel(
+                    "HB1",
+                    "CL1",
+                    "C1",
+                    "T1",
+                    ("Q_HOME", "Q_OTHER"),
+                    ("Q_HOME",),
+                    target_dates[0],
+                    target_dates[-1],
+                ),
+            )
+            HomeroomAttendanceBoundaryConstraint().apply(context)
+            for date_index, selected_kind in enumerate(pattern):
+                context.model.add(
+                    context.assignment_variables[f"Q_HOME__D{date_index}"]
+                    == int(selected_kind == 2)
+                )
+                context.model.add(
+                    context.assignment_variables[f"Q_OTHER__D{date_index}"]
+                    == int(selected_kind == 1)
+                )
+            solver = cp_model.CpSolver()
+            status = solver.status_name(solver.solve(context.model))
+            attended_kinds = [kind for kind in pattern if kind]
+            expected_feasible = bool(attended_kinds) and attended_kinds[0] == 2
+            expected_feasible = expected_feasible and attended_kinds[-1] == 2
+
+            assert (status in {"OPTIMAL", "FEASIBLE"}) is expected_feasible
+
+
+def test_h20_compact_encoding_adds_one_attendance_variable_per_target_date() -> None:
+    target_dates = (DAY_ONE, DAY_TWO)
+    candidates = tuple(
+        _candidate(
+            f"{requirement_id}__D{date_index}",
+            "T1" if requirement_id == "Q_HOME" else "T2",
+            target_date,
+            "C1",
+            "P1",
+        )
+        for date_index, target_date in enumerate(target_dates)
+        for requirement_id in ("Q_HOME", "Q_OTHER")
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL1",
+            "C1",
+            "T1",
+            ("Q_HOME", "Q_OTHER"),
+            ("Q_HOME",),
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    variable_count_before = len(context.model.proto.variables)
+    constraint_count_before = len(context.model.proto.constraints)
+
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert len(context.model.proto.variables) - variable_count_before == len(target_dates)
+    assert (
+        len(context.model.proto.constraints) - constraint_count_before == 3 * len(target_dates) + 1
+    )
+    assert not context.homeroom_first_date_variables
+    assert not context.homeroom_last_date_variables
 
 
 def test_class_overlap_constraint_rejects_same_class_slot() -> None:

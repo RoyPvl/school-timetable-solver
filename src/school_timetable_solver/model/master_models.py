@@ -46,6 +46,7 @@ class ClassModel:
 class SubjectModel:
     subject_id: str
     subject_name: str
+    lesson_type: str
     enabled: bool
 
 

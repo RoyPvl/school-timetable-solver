@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 from school_timetable_solver.model.input_models import (
+    HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
@@ -99,6 +100,32 @@ def test_rule_resolver_allows_missing_hard_attendance_limit_and_resolves_prefere
     assert not resolved.issues
     assert all(rule.attendance_streak_limit is None for rule in resolved.class_date_rules)
     assert all(rule.preferred_attendance_streak_limit == 3 for rule in resolved.class_date_rules)
+
+
+def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_regular_lesson(
+    minimal_input_data: InputDataModel,
+) -> None:
+    rule = HomeroomBoundaryRuleModel(
+        "HB1",
+        "中学の夏期期間端",
+        True,
+        ("division", "has_regular_homeroom_lesson"),
+        ("eq", "eq"),
+        ("junior_high", "TRUE"),
+        date(2026, 7, 27),
+        date(2026, 7, 28),
+    )
+    input_data = replace(minimal_input_data, homeroom_boundary_rules=(rule,))
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert not resolved.issues
+    assert len(resolved.homeroom_boundary_rules) == 1
+    boundary = resolved.homeroom_boundary_rules[0]
+    assert boundary.class_id == "CL2"
+    assert boundary.teacher_id == "T2"
+    assert boundary.attendance_requirement_ids == ("Q2",)
+    assert boundary.eligible_requirement_ids == ("Q2",)
 
 
 def test_rule_resolver_rejects_preferred_attendance_limit_above_hard_limit(

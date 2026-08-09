@@ -30,6 +30,7 @@ class ReferenceIntegrityValidator:
         self._validate_lesson_count_rules(input_data, issues)
         self._validate_lesson_count_preference_rules(input_data, issues)
         self._validate_teacher_day_off_rules(input_data, issues)
+        self._validate_homeroom_boundary_rules(input_data, issues)
         return issues
 
     def _validate_uniqueness(
@@ -60,6 +61,10 @@ class ReferenceIntegrityValidator:
             (
                 "teacher_day_off_rule_id",
                 (item.rule_id for item in input_data.teacher_day_off_rules),
+            ),
+            (
+                "homeroom_boundary_rule_id",
+                (item.rule_id for item in input_data.homeroom_boundary_rules),
             ),
         )
         for label, identifiers in id_groups:
@@ -216,6 +221,15 @@ class ReferenceIntegrityValidator:
                         "max_periods_per_dayは空欄または1以上が必要です",
                     )
                 )
+        for subject in input_data.subjects:
+            if subject.lesson_type not in {"regular", "special", "other"}:
+                issues.append(
+                    self._issue(
+                        "INVALID_SUBJECT_LESSON_TYPE",
+                        subject.subject_id,
+                        f"lesson_typeが不正です: {subject.lesson_type}",
+                    )
+                )
         for segment in input_data.lesson_count_rule_segments:
             if segment.exact_periods < 0:
                 issues.append(
@@ -243,7 +257,7 @@ class ReferenceIntegrityValidator:
                         "start_dateはend_date以前である必要があります",
                     )
                 )
-            if rule.required_days_off < 0:
+            if rule.required_days_off is not None and rule.required_days_off < 0:
                 issues.append(
                     self._issue(
                         "INVALID_TEACHER_DAY_OFF_COUNT",
@@ -251,6 +265,66 @@ class ReferenceIntegrityValidator:
                         "required_days_offは0以上が必要です",
                     )
                 )
+            bounds = (rule.minimum_days_off, rule.maximum_days_off)
+            if rule.required_days_off is None and None in bounds:
+                issues.append(
+                    self._issue(
+                        "MISSING_TEACHER_DAY_OFF_COUNT",
+                        rule.rule_id,
+                        "required_days_offまたはminimum_days_offとmaximum_days_offが必要です",
+                    )
+                )
+            if rule.required_days_off is not None and any(value is not None for value in bounds):
+                issues.append(
+                    self._issue(
+                        "CONFLICTING_TEACHER_DAY_OFF_COUNT",
+                        rule.rule_id,
+                        "required_days_offと最小・最大日数は同時に指定できません",
+                    )
+                )
+            if (
+                rule.minimum_days_off is not None
+                and rule.maximum_days_off is not None
+                and (rule.minimum_days_off < 0 or rule.minimum_days_off > rule.maximum_days_off)
+            ):
+                issues.append(
+                    self._issue(
+                        "INVALID_TEACHER_DAY_OFF_RANGE",
+                        rule.rule_id,
+                        "0 <= minimum_days_off <= maximum_days_offが必要です",
+                    )
+                )
+            if (rule.quota_group_id is None) != (rule.group_required_days_off is None):
+                issues.append(
+                    self._issue(
+                        "INCOMPLETE_TEACHER_DAY_OFF_GROUP",
+                        rule.rule_id,
+                        "quota_group_idとgroup_required_days_offは両方指定してください",
+                    )
+                )
+            if rule.preferred_days_off is not None:
+                minimum = (
+                    rule.required_days_off
+                    if rule.required_days_off is not None
+                    else rule.minimum_days_off
+                )
+                maximum = (
+                    rule.required_days_off
+                    if rule.required_days_off is not None
+                    else rule.maximum_days_off
+                )
+                if (
+                    minimum is None
+                    or maximum is None
+                    or not minimum <= rule.preferred_days_off <= maximum
+                ):
+                    issues.append(
+                        self._issue(
+                            "INVALID_TEACHER_DAY_OFF_PREFERENCE",
+                            rule.rule_id,
+                            "preferred_days_offは期間の最小・最大日数の範囲内が必要です",
+                        )
+                    )
 
     def _validate_references(
         self,
@@ -573,6 +647,78 @@ class ReferenceIntegrityValidator:
                         "RULE_VALUE_REQUIRED",
                         target,
                         "配置ルールには少なくとも1つの制約値が必要です",
+                    )
+                )
+
+    def _validate_homeroom_boundary_rules(
+        self,
+        input_data: InputDataModel,
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        valid_fields = {
+            "class_id",
+            "division",
+            "grade",
+            "exam_category",
+            "campus_id",
+            "has_regular_homeroom_lesson",
+        }
+        valid_operators = {"eq", "ne", "in", "ge", "le", "between"}
+        calendar_dates = {day.target_date for day in input_data.calendar_days}
+        for rule in input_data.homeroom_boundary_rules:
+            target = rule.rule_id
+            if not rule.condition_fields:
+                issues.append(
+                    self._issue(
+                        "HOMEROOM_BOUNDARY_CONDITION_REQUIRED",
+                        target,
+                        "対象クラス条件が必要です",
+                    )
+                )
+            if not (
+                len(rule.condition_fields)
+                == len(rule.condition_operators)
+                == len(rule.condition_values)
+            ):
+                issues.append(
+                    self._issue(
+                        "HOMEROOM_BOUNDARY_CONDITION_LENGTH_MISMATCH",
+                        target,
+                        "condition_field/operator/valueの要素数が一致しません",
+                    )
+                )
+            for field in rule.condition_fields:
+                if field not in valid_fields:
+                    issues.append(
+                        self._issue(
+                            "INVALID_HOMEROOM_BOUNDARY_CONDITION_FIELD",
+                            target,
+                            f"条件項目が不正です: {field}",
+                        )
+                    )
+            for operator in rule.condition_operators:
+                if operator not in valid_operators:
+                    issues.append(
+                        self._issue(
+                            "INVALID_HOMEROOM_BOUNDARY_OPERATOR",
+                            target,
+                            f"条件演算子が不正です: {operator}",
+                        )
+                    )
+            if rule.start_date > rule.end_date:
+                issues.append(
+                    self._issue(
+                        "INVALID_HOMEROOM_BOUNDARY_DATE_RANGE",
+                        target,
+                        "start_dateはend_date以前である必要があります",
+                    )
+                )
+            if rule.start_date not in calendar_dates or rule.end_date not in calendar_dates:
+                issues.append(
+                    self._issue(
+                        "UNKNOWN_HOMEROOM_BOUNDARY_DATE",
+                        target,
+                        "開始日・終了日は開講カレンダーに必要です",
                     )
                 )
 
@@ -905,18 +1051,62 @@ class ReferenceIntegrityValidator:
                 for target_date in output_dates
                 if rule.start_date <= target_date <= rule.end_date
             }
-            if rule.required_days_off > len(eligible_dates):
+            maximum_required = (
+                rule.required_days_off
+                if rule.required_days_off is not None
+                else rule.maximum_days_off
+            )
+            if maximum_required is not None and maximum_required > len(eligible_dates):
                 issues.append(
                     self._issue(
                         "TEACHER_DAY_OFF_CAPACITY_SHORTAGE",
                         rule.rule_id,
                         (
-                            "期間内の出力対象日数がrequired_days_off未満です: "
-                            f"required={rule.required_days_off}, available={len(eligible_dates)}"
+                            "期間内の出力対象日数が最大休日数未満です: "
+                            f"maximum={maximum_required}, available={len(eligible_dates)}"
                         ),
                     )
                 )
             rules_by_teacher[rule.teacher_id].append(rule)
+
+        grouped_rules: dict[tuple[str, str], list[TeacherDayOffRuleModel]] = defaultdict(list)
+        for rule in enabled_rules:
+            if rule.quota_group_id is not None:
+                grouped_rules[(rule.teacher_id, rule.quota_group_id)].append(rule)
+        for group_key, group_rules in grouped_rules.items():
+            totals = {rule.group_required_days_off for rule in group_rules}
+            if len(totals) != 1:
+                issues.append(
+                    self._issue(
+                        "INCONSISTENT_TEACHER_DAY_OFF_GROUP_TOTAL",
+                        "/".join(group_key),
+                        "同一グループのgroup_required_days_offを一致させてください",
+                    )
+                )
+                continue
+            total = next(iter(totals))
+            if total is None:
+                continue
+            minimum_total = sum(
+                rule.required_days_off
+                if rule.required_days_off is not None
+                else rule.minimum_days_off or 0
+                for rule in group_rules
+            )
+            maximum_total = sum(
+                rule.required_days_off
+                if rule.required_days_off is not None
+                else rule.maximum_days_off or 0
+                for rule in group_rules
+            )
+            if not minimum_total <= total <= maximum_total:
+                issues.append(
+                    self._issue(
+                        "INVALID_TEACHER_DAY_OFF_GROUP_TOTAL",
+                        "/".join(group_key),
+                        "グループ合計が各期間の最小・最大日数の合計範囲外です",
+                    )
+                )
 
         for teacher_id, teacher_rules in rules_by_teacher.items():
             ordered_rules = sorted(teacher_rules, key=lambda item: (item.start_date, item.end_date))

@@ -8,6 +8,7 @@ from ortools.sat.python import cp_model
 from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
+    ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
 )
@@ -35,6 +36,7 @@ class SolverContext:
     )
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
+    homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
     class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
@@ -51,5 +53,14 @@ class SolverContext:
     ] = field(default_factory=dict)
     teacher_day_off_rules: tuple[TeacherDayOffRuleModel, ...] = ()
     teacher_day_off_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
+    homeroom_first_date_variables: dict[tuple[str, str, date], cp_model.IntVar] = field(
+        default_factory=dict
+    )
+    homeroom_last_date_variables: dict[tuple[str, str, date], cp_model.IntVar] = field(
+        default_factory=dict
+    )
+    homeroom_attendance_variables: dict[tuple[str, str, date], cp_model.IntVar] = field(
+        default_factory=dict
+    )
     teacher_home_campuses: dict[str, str] = field(default_factory=dict)
     fixed_teacher_leave_cell_counts: dict[tuple[str, date], int] = field(default_factory=dict)
