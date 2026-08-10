@@ -148,7 +148,7 @@ def minimal_input_data() -> InputDataModel:
                 (),
                 (),
                 4,
-                3,
+                True,
                 None,
                 10,
             ),

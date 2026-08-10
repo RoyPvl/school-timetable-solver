@@ -62,6 +62,7 @@ class RuleResolverService:
                 daily_limit: int | None = None
                 attendance_limit: int | None = None
                 attendance_preference_limit: int | None = None
+                required_lesson_periods: set[str] = set()
                 applied: list[str] = []
                 for rule in sorted(applicable, key=lambda item: item.priority):
                     changed = False
@@ -71,6 +72,14 @@ class RuleResolverService:
                             proposed
                             if allowed is None or rule.constraint_type == "override"
                             else allowed.intersection(proposed)
+                        )
+                        changed = True
+                    if rule.required_lesson_period_ids:
+                        proposed_required = set(rule.required_lesson_period_ids)
+                        required_lesson_periods = (
+                            proposed_required
+                            if rule.constraint_type == "override"
+                            else required_lesson_periods.union(proposed_required)
                         )
                         changed = True
                     daily_limit = self._resolve_limit(
@@ -112,6 +121,29 @@ class RuleResolverService:
                             "RULE_REQUIRED_VALUE_MISSING", target, "daily_hard_limitが未解決です"
                         )
                     )
+                if allowed is not None and not required_lesson_periods.issubset(allowed):
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "RULE_REQUIRED_LESSON_PERIOD_NOT_ALLOWED",
+                            target,
+                            (
+                                "required_lesson_periodsはallowed_periodsの部分集合が必要です: "
+                                f"required={sorted(required_lesson_periods)}, "
+                                f"allowed={sorted(allowed)}"
+                            ),
+                        )
+                    )
+                if daily_limit is not None and len(required_lesson_periods) > daily_limit:
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "RULE_REQUIRED_LESSON_PERIODS_EXCEED_DAILY_LIMIT",
+                            target,
+                            (
+                                "必須授業時限数がdaily_hard_limitを超えています: "
+                                f"required={len(required_lesson_periods)}, limit={daily_limit}"
+                            ),
+                        )
+                    )
                 if (
                     attendance_limit is not None
                     and attendance_preference_limit is not None
@@ -142,6 +174,11 @@ class RuleResolverService:
                         attendance_streak_limit=attendance_limit,
                         applied_rule_ids=tuple(dict.fromkeys(applied)),
                         preferred_attendance_streak_limit=attendance_preference_limit,
+                        required_lesson_period_ids=tuple(
+                            period_id
+                            for period_id in period_ids
+                            if period_id in required_lesson_periods
+                        ),
                     )
                 )
 
@@ -158,16 +195,21 @@ class RuleResolverService:
                     issues,
                 )
                 daily_limit: int | None = None
-                consecutive_limit: int | None = None
+                forbid_first_last_same_day: bool | None = None
                 applied: list[str] = []
                 for rule in sorted(applicable, key=lambda item: item.priority):
                     daily_limit = self._resolve_limit(
                         daily_limit, rule.daily_hard_limit, rule.constraint_type
                     )
-                    consecutive_limit = self._resolve_limit(
-                        consecutive_limit, rule.consecutive_limit, rule.constraint_type
+                    forbid_first_last_same_day = self._resolve_boolean(
+                        forbid_first_last_same_day,
+                        rule.forbid_first_last_same_day,
+                        rule.constraint_type,
                     )
-                    if rule.daily_hard_limit is not None or rule.consecutive_limit is not None:
+                    if (
+                        rule.daily_hard_limit is not None
+                        or rule.forbid_first_last_same_day is not None
+                    ):
                         applied.append(rule.rule_id)
                 target = f"teacher={teacher.teacher_id}/date={calendar_day.target_date}"
                 if daily_limit is None:
@@ -176,12 +218,12 @@ class RuleResolverService:
                             "RULE_REQUIRED_VALUE_MISSING", target, "daily_hard_limitが未解決です"
                         )
                     )
-                if consecutive_limit is None:
+                if forbid_first_last_same_day is None:
                     issues.append(
                         RuleResolutionIssueModel(
                             "RULE_REQUIRED_VALUE_MISSING",
                             target,
-                            "consecutive_limitが未解決です",
+                            "forbid_first_last_same_dayが未解決です",
                         )
                     )
                 teacher_rules.append(
@@ -189,7 +231,7 @@ class RuleResolverService:
                         teacher_id=teacher.teacher_id,
                         target_date=calendar_day.target_date,
                         daily_hard_limit=daily_limit,
-                        consecutive_hard_limit=consecutive_limit,
+                        forbid_first_last_same_day=forbid_first_last_same_day,
                         applied_rule_ids=tuple(dict.fromkeys(applied)),
                     )
                 )
@@ -546,12 +588,13 @@ class RuleResolverService:
             properties: tuple[tuple[str, object | None], ...] = (
                 ("allowed_periods", rule.allowed_period_ids or None),
                 ("daily_hard_limit", rule.daily_hard_limit),
-                ("consecutive_limit", rule.consecutive_limit),
+                ("forbid_first_last_same_day", rule.forbid_first_last_same_day),
                 ("attendance_streak_limit", rule.attendance_streak_limit),
                 (
                     "preferred_attendance_streak_limit",
                     rule.preferred_attendance_streak_limit,
                 ),
+                ("required_lesson_periods", rule.required_lesson_period_ids or None),
             )
             for field, value in properties:
                 if value is None:
@@ -583,6 +626,18 @@ class RuleResolverService:
         if current is None or constraint_type == "override":
             return proposed
         return min(current, proposed)
+
+    def _resolve_boolean(
+        self,
+        current: bool | None,
+        proposed: bool | None,
+        constraint_type: str,
+    ) -> bool | None:
+        if proposed is None:
+            return current
+        if current is None or constraint_type == "override":
+            return proposed
+        return current or proposed
 
 
 class CandidateBuilderService:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
-from itertools import combinations, pairwise, product
+from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
 
@@ -140,6 +140,28 @@ class HomeroomAttendanceBoundaryConstraint:
                     <= sum(eligible_variables_by_date[target_date]) + sum(later_attendance)
                 )
                 later_attendance.append(attendance_variables[target_date])
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassRequiredLessonSlotConstraint:
+    """H21: require one lesson in every configured class/date/period slot."""
+
+    rule_id = "H21"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_slot: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_slot[
+                (candidate.class_id, candidate.target_date, candidate.period_id)
+            ].append(context.assignment_variables[candidate.candidate_id])
+        for (class_id, target_date), period_ids in context.class_required_lesson_periods.items():
+            for period_id in period_ids:
+                context.model.add(
+                    sum(variables_by_class_slot[(class_id, target_date, period_id)]) == 1
+                )
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -371,8 +393,8 @@ class TeacherDailyLimitConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
-class TeacherConsecutivePeriodConstraint:
-    """H09: restrict the occupied period pattern at the configured limit."""
+class TeacherFirstLastPeriodConstraint:
+    """H09: prevent a teacher from working both boundary periods on one day."""
 
     rule_id = "H09"
 
@@ -386,50 +408,18 @@ class TeacherConsecutivePeriodConstraint:
             period_id
             for period_id, _ in sorted(context.period_orders.items(), key=lambda item: item[1])
         ]
-        allowed_patterns_by_limit: dict[int, tuple[tuple[int, ...], ...]] = {}
-        for teacher_id, target_date in {(key[0], key[1]) for key in groups}:
-            limit = context.teacher_consecutive_limits[(teacher_id, target_date)]
-            if limit is None or limit >= len(ordered_periods):
-                continue
-            period_variables = [
-                sum(groups.get((teacher_id, target_date, period_id), ()))
-                for period_id in ordered_periods
-            ]
-            if limit == len(ordered_periods) - 1:
-                total_presence = sum(period_variables)
-                context.model.add(total_presence <= limit)
-                for middle_period in period_variables[1:-1]:
-                    context.model.add(total_presence - middle_period <= limit - 1)
-                continue
-            presence_variables: list[cp_model.IntVar] = []
-            for period_id in ordered_periods:
-                variables = groups.get((teacher_id, target_date, period_id), ())
-                presence = context.model.new_bool_var(
-                    f"teacher_period_presence__{teacher_id}__{target_date.isoformat()}__{period_id}"
-                )
-                if variables:
-                    context.model.add_max_equality(presence, variables)
-                else:
-                    context.model.add(presence == 0)
-                presence_variables.append(presence)
-            allowed_patterns = allowed_patterns_by_limit.get(limit)
-            if allowed_patterns is None:
-                allowed_patterns = tuple(
-                    pattern
-                    for pattern in product((0, 1), repeat=len(ordered_periods))
-                    if sum(pattern) < limit
-                    or (
-                        sum(pattern) == limit
-                        and any(
-                            pattern[start : start + limit] == (1,) * limit
-                            and not any(pattern[:start])
-                            and not any(pattern[start + limit :])
-                            for start in range(len(ordered_periods) - limit + 1)
-                        )
-                    )
-                )
-                allowed_patterns_by_limit[limit] = allowed_patterns
-            context.model.add_allowed_assignments(presence_variables, allowed_patterns)
+        if len(ordered_periods) >= 2:
+            first_period_id = ordered_periods[0]
+            last_period_id = ordered_periods[-1]
+            for (
+                teacher_id,
+                target_date,
+            ), forbidden in context.teacher_first_last_period_forbidden.items():
+                if not forbidden:
+                    continue
+                first_period_variables = groups.get((teacher_id, target_date, first_period_id), ())
+                last_period_variables = groups.get((teacher_id, target_date, last_period_id), ())
+                context.model.add(sum(first_period_variables) + sum(last_period_variables) <= 1)
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -573,6 +563,7 @@ DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
     LessonCountInScopeConstraint(),
     HomeroomAttendanceBoundaryConstraint(),
+    ClassRequiredLessonSlotConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
     CampusRoomCapacityConstraint(),
@@ -580,7 +571,7 @@ DEFAULT_HARD_CONSTRAINTS = (
     ClassLongInternalGapConstraint(),
     ClassDailyLimitConstraint(),
     TeacherDailyLimitConstraint(),
-    TeacherConsecutivePeriodConstraint(),
+    TeacherFirstLastPeriodConstraint(),
     ConsecutiveAttendanceConstraint(),
     TeacherSingleCampusPerDayConstraint(),
     TeacherDayOffQuotaConstraint(),
@@ -591,6 +582,7 @@ HardConstraint = (
     RequiredLessonCountConstraint
     | LessonCountInScopeConstraint
     | HomeroomAttendanceBoundaryConstraint
+    | ClassRequiredLessonSlotConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
     | CampusRoomCapacityConstraint
@@ -598,7 +590,7 @@ HardConstraint = (
     | ClassLongInternalGapConstraint
     | ClassDailyLimitConstraint
     | TeacherDailyLimitConstraint
-    | TeacherConsecutivePeriodConstraint
+    | TeacherFirstLastPeriodConstraint
     | ConsecutiveAttendanceConstraint
     | TeacherSingleCampusPerDayConstraint
     | TeacherDayOffQuotaConstraint

@@ -35,7 +35,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.7 workbooks into Excel-independent models."""
+    """Read input-contract v0.9 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -111,11 +111,12 @@ class ExcelInputReaderAdapter:
             "weekdays",
             "allowed_periods",
             "daily_hard_limit",
-            "consecutive_limit",
+            "forbid_first_last_same_day",
             "attendance_streak_limit",
             "priority",
             "note",
             "preferred_attendance_streak_limit",
+            "required_lesson_periods",
         ),
         "12_選好設定": ("rule_id", "enabled", "weight", "note"),
         "13_授業配置数ルール": (
@@ -362,7 +363,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.8":
+        if schema_version is not None and schema_version != "0.9":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -1153,11 +1154,11 @@ class ExcelInputReaderAdapter:
                         "daily_hard_limit",
                         issues,
                     ),
-                    consecutive_limit=self._optional_integer(
-                        row["consecutive_limit"],
+                    forbid_first_last_same_day=self._optional_boolean(
+                        row["forbid_first_last_same_day"],
                         "11_配置ルール",
                         row_number,
-                        "consecutive_limit",
+                        "forbid_first_last_same_day",
                         issues,
                     ),
                     attendance_streak_limit=self._optional_integer(
@@ -1175,6 +1176,7 @@ class ExcelInputReaderAdapter:
                         "preferred_attendance_streak_limit",
                         issues,
                     ),
+                    required_lesson_period_ids=self._pipe(row["required_lesson_periods"]),
                 )
             )
         return result
@@ -1253,6 +1255,18 @@ class ExcelInputReaderAdapter:
             )
         )
         return None
+
+    def _optional_boolean(
+        self,
+        value: object,
+        sheet: str,
+        row: int,
+        header: str,
+        issues: list[ValidationIssueModel],
+    ) -> bool | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return self._boolean(value, sheet, row, header, issues)
 
     def _date(
         self,

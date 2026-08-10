@@ -13,6 +13,7 @@ class EffectiveClassDateRuleModel:
     attendance_streak_limit: int | None
     applied_rule_ids: tuple[str, ...]
     preferred_attendance_streak_limit: int | None = None
+    required_lesson_period_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +21,7 @@ class EffectiveTeacherDateRuleModel:
     teacher_id: str
     target_date: date
     daily_hard_limit: int | None
-    consecutive_hard_limit: int | None
+    forbid_first_last_same_day: bool | None
     applied_rule_ids: tuple[str, ...]
 
 

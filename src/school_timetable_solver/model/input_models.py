@@ -95,10 +95,11 @@ class PlacementRuleModel:
     weekdays: tuple[str, ...]
     allowed_period_ids: tuple[str, ...]
     daily_hard_limit: int | None
-    consecutive_limit: int | None
+    forbid_first_last_same_day: bool | None
     attendance_streak_limit: int | None
     priority: int
     preferred_attendance_streak_limit: int | None = None
+    required_lesson_period_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

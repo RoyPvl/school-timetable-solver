@@ -10,13 +10,14 @@ from school_timetable_solver.constraint.hard_constraints import (
     CampusRoomCapacityConstraint,
     ClassLongInternalGapConstraint,
     ClassOverlapConstraint,
+    ClassRequiredLessonSlotConstraint,
     ClassRoomContinuityConstraint,
     ConsecutiveAttendanceConstraint,
     HomeroomAttendanceBoundaryConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
-    TeacherConsecutivePeriodConstraint,
     TeacherDayOffQuotaConstraint,
+    TeacherFirstLastPeriodConstraint,
     TeacherLeaveAnnotationCapacityConstraint,
     TeacherOverlapConstraint,
     TeacherSingleCampusPerDayConstraint,
@@ -72,8 +73,8 @@ def _context(candidates: tuple[CandidateSlotModel, ...]) -> SolverContext:
         teacher_daily_limits={
             (candidate.teacher_id, candidate.target_date): 6 for candidate in candidates
         },
-        teacher_consecutive_limits={
-            (candidate.teacher_id, candidate.target_date): 6 for candidate in candidates
+        teacher_first_last_period_forbidden={
+            (candidate.teacher_id, candidate.target_date): False for candidate in candidates
         },
         class_attendance_limits={
             (candidate.class_id, candidate.target_date): 6 for candidate in candidates
@@ -236,6 +237,21 @@ def test_h17_lesson_count_in_scope_requires_exact_count() -> None:
     LessonCountInScopeConstraint().apply(context)
     context.model.add(context.assignment_variables["Q1__1"] == 1)
     context.model.add(context.assignment_variables["Q1__2"] == 1)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
+
+
+def test_h21_requires_every_configured_class_slot() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+        _candidate("Q2__1", "T2", DAY_ONE, "C1", "P2"),
+        _candidate("Q3__1", "T3", DAY_ONE, "C1", "P3"),
+    )
+    context = _context(candidates)
+    context.class_required_lesson_periods[("CL1", DAY_ONE)] = ("P1", "P2", "P3")
+    ClassRequiredLessonSlotConstraint().apply(context)
+    context.model.add(context.assignment_variables["Q3__1"] == 0)
     solver = cp_model.CpSolver()
 
     assert solver.status_name(solver.solve(context.model)) == "INFEASIBLE"
@@ -538,12 +554,13 @@ def test_teacher_overlap_forces_each_slot_only_when_demand_equals_slot_supply() 
     (
         ({"P1", "P2", "P3", "P4", "P5"}, True),
         ({"P2", "P3", "P4", "P5", "P6"}, True),
-        ({"P1", "P3", "P4", "P5", "P6"}, False),
+        ({"P1", "P3", "P4", "P5"}, True),
         ({"P2", "P4", "P5", "P6"}, True),
+        ({"P1", "P3", "P4", "P5", "P6"}, False),
         ({"P1", "P2", "P3", "P4", "P5", "P6"}, False),
     ),
 )
-def test_h09_restricts_five_period_teacher_work_patterns(
+def test_h09_forbids_working_both_boundary_periods(
     selected_period_ids: set[str],
     expected_feasible: bool,
 ) -> None:
@@ -551,10 +568,37 @@ def test_h09_restricts_five_period_teacher_work_patterns(
         _candidate(f"Q{index}__1", "T1", DAY_ONE, "C1", f"P{index}") for index in range(1, 7)
     )
     context = _context(candidates)
-    context.teacher_consecutive_limits["T1", DAY_ONE] = 5
-    TeacherConsecutivePeriodConstraint().apply(context)
+    context.teacher_first_last_period_forbidden["T1", DAY_ONE] = True
+    TeacherFirstLastPeriodConstraint().apply(context)
 
     status = _solve_with_teacher_periods(context, selected_period_ids)
+
+    assert (status in {"OPTIMAL", "FEASIBLE"}) is expected_feasible
+
+
+@pytest.mark.parametrize(
+    ("first_date", "last_date", "forbidden", "expected_feasible"),
+    (
+        (DAY_ONE, DAY_ONE, True, False),
+        (DAY_ONE, DAY_TWO, True, True),
+        (DAY_ONE, DAY_ONE, False, True),
+    ),
+)
+def test_h09_applies_across_campuses_only_within_the_same_day(
+    first_date: date,
+    last_date: date,
+    forbidden: bool,
+    expected_feasible: bool,
+) -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", first_date, "C1", "P1"),
+        _candidate("Q2__1", "T1", last_date, "C2", "P6", "CL2"),
+    )
+    context = _context(candidates)
+    context.teacher_first_last_period_forbidden["T1", DAY_ONE] = forbidden
+    TeacherFirstLastPeriodConstraint().apply(context)
+
+    status = _force_all_and_solve(context)
 
     assert (status in {"OPTIMAL", "FEASIBLE"}) is expected_feasible
 

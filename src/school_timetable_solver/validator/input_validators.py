@@ -599,10 +599,35 @@ class ReferenceIntegrityValidator:
                 )
             for period_id in rule.allowed_period_ids:
                 self._require_reference(issues, target, "allowed_period", period_id, period_ids)
+            for period_id in rule.required_lesson_period_ids:
+                self._require_reference(
+                    issues,
+                    target,
+                    "required_lesson_period",
+                    period_id,
+                    period_ids,
+                )
+            duplicate_required_period_ids = {
+                period_id
+                for period_id, count in Counter(rule.required_lesson_period_ids).items()
+                if count > 1
+            }
+            if duplicate_required_period_ids:
+                issues.append(
+                    self._issue(
+                        "DUPLICATE_REQUIRED_LESSON_PERIOD",
+                        target,
+                        (
+                            "required_lesson_periodsに重複があります: "
+                            f"{sorted(duplicate_required_period_ids)}"
+                        ),
+                    )
+                )
             if rule.target_entity == "teacher" and (
                 rule.allowed_period_ids
                 or rule.attendance_streak_limit is not None
                 or rule.preferred_attendance_streak_limit is not None
+                or rule.required_lesson_period_ids
             ):
                 issues.append(
                     self._issue(
@@ -610,21 +635,21 @@ class ReferenceIntegrityValidator:
                         target,
                         (
                             "teacherではallowed_periods/attendance_streak_limit/"
-                            "preferred_attendance_streak_limitを使用できません"
+                            "preferred_attendance_streak_limit/"
+                            "required_lesson_periodsを使用できません"
                         ),
                     )
                 )
-            if rule.target_entity == "class" and rule.consecutive_limit is not None:
+            if rule.target_entity == "class" and rule.forbid_first_last_same_day is not None:
                 issues.append(
                     self._issue(
                         "INVALID_RULE_COLUMN_FOR_TARGET",
                         target,
-                        "classではconsecutive_limitを使用できません",
+                        "classではforbid_first_last_same_dayを使用できません",
                     )
                 )
             for label, value in (
                 ("daily_hard_limit", rule.daily_hard_limit),
-                ("consecutive_limit", rule.consecutive_limit),
                 ("attendance_streak_limit", rule.attendance_streak_limit),
                 (
                     "preferred_attendance_streak_limit",
@@ -638,9 +663,10 @@ class ReferenceIntegrityValidator:
             if not (
                 rule.allowed_period_ids
                 or rule.daily_hard_limit is not None
-                or rule.consecutive_limit is not None
+                or rule.forbid_first_last_same_day is not None
                 or rule.attendance_streak_limit is not None
                 or rule.preferred_attendance_streak_limit is not None
+                or rule.required_lesson_period_ids
             ):
                 issues.append(
                     self._issue(
@@ -1194,6 +1220,19 @@ class CapacityFeasibilityValidator:
                         ),
                     )
                 )
+        for rule in resolved_rules.class_date_rules:
+            available_slots = slots_by_class[rule.class_id]
+            for period_id in rule.required_lesson_period_ids:
+                slot = (rule.target_date, period_id)
+                if slot not in available_slots:
+                    issues.append(
+                        ValidationIssueModel(
+                            "REQUIRED_LESSON_SLOT_SUPPLY_SHORTAGE",
+                            "ERROR",
+                            f"{rule.class_id}/{rule.target_date}/{period_id}",
+                            "必須授業時限に配置可能な候補がありません",
+                        )
+                    )
         active_campus_ids = {campus.campus_id for campus in input_data.campuses if campus.enabled}
         rooms_by_campus = Counter(
             room.campus_id

@@ -41,6 +41,43 @@ def test_rule_resolver_applies_hard_intersection_override_and_minimum_limits(
     assert not resolved.issues
 
 
+def test_rule_resolver_unions_and_overrides_required_lesson_periods(
+    minimal_input_data: InputDataModel,
+) -> None:
+    base = replace(
+        minimal_input_data.placement_rules[0],
+        rule_id="R_REQUIRED_BASE",
+        required_lesson_period_ids=("P1",),
+        priority=40,
+    )
+    hard = replace(
+        base,
+        rule_id="R_REQUIRED_HARD",
+        required_lesson_period_ids=("P2",),
+        priority=50,
+    )
+    override = replace(
+        base,
+        rule_id="R_REQUIRED_OVERRIDE",
+        constraint_type="override",
+        required_lesson_period_ids=("P3",),
+        priority=60,
+    )
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=(*minimal_input_data.placement_rules, base, hard, override),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+    rule = next(
+        item
+        for item in resolved.class_date_rules
+        if item.class_id == "CL1" and item.target_date == date(2026, 7, 27)
+    )
+
+    assert rule.required_lesson_period_ids == ("P3",)
+
+
 def test_rule_resolver_supports_class_attributes_teacher_id_campus_date_weekday_and_between(
     minimal_input_data: InputDataModel,
 ) -> None:

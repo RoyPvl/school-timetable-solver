@@ -94,10 +94,11 @@ class ValidateResultService:
         self._validate_required_counts(input_data, lessons, issues)
         self._validate_lesson_counts_in_scope(resolved_rules, lessons, issues)
         self._validate_homeroom_attendance_boundaries(resolved_rules, lessons, issues)
+        self._validate_required_lesson_slots(resolved_rules, lessons, issues)
         self._validate_overlaps(lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
-        self._validate_consecutive_periods(input_data, resolved_rules, lessons, issues)
+        self._validate_first_last_periods(input_data, resolved_rules, lessons, issues)
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
         self._validate_single_campus_per_day(lessons, issues)
         self._validate_teacher_day_offs(input_data, lessons, teacher_day_offs, issues)
@@ -325,6 +326,27 @@ class ValidateResultService:
                     )
                 )
 
+    def _validate_required_lesson_slots(
+        self,
+        resolved_rules: ResolvedRuleSetModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        occupied_slots = {
+            (lesson.class_id, lesson.target_date, lesson.period_id) for lesson in lessons
+        }
+        for rule in resolved_rules.class_date_rules:
+            for period_id in rule.required_lesson_period_ids:
+                slot = (rule.class_id, rule.target_date, period_id)
+                if slot not in occupied_slots:
+                    issues.append(
+                        self._issue(
+                            "H21",
+                            f"{rule.class_id}/{rule.target_date}/{period_id}",
+                            "必須授業時限に授業がありません",
+                        )
+                    )
+
     def _report_lesson_count_in_scope_preference(
         self,
         resolved_rules: ResolvedRuleSetModel,
@@ -524,7 +546,7 @@ class ValidateResultService:
             if limit is not None and count > limit:
                 issues.append(self._issue("H08", str(key), f"教師日別上限超過: {count}>{limit}"))
 
-    def _validate_consecutive_periods(
+    def _validate_first_last_periods(
         self,
         input_data: InputDataModel,
         resolved_rules: ResolvedRuleSetModel,
@@ -532,8 +554,8 @@ class ValidateResultService:
         issues: list[ValidationIssueModel],
     ) -> None:
         period_orders = {period.period_id: period.output_order for period in input_data.periods}
-        limits = {
-            (item.teacher_id, item.target_date): item.consecutive_hard_limit
+        forbidden_by_teacher_date = {
+            (item.teacher_id, item.target_date): item.forbid_first_last_same_day
             for item in resolved_rules.teacher_date_rules
         }
         grouped: dict[tuple[str, date], set[int]] = defaultdict(set)
@@ -542,24 +564,23 @@ class ValidateResultService:
                 grouped[(lesson.teacher_id, lesson.target_date)].add(
                     period_orders[lesson.period_id]
                 )
+        if len(period_orders) < 2:
+            return
+        first_period_order = min(period_orders.values())
+        last_period_order = max(period_orders.values())
         for key, orders in grouped.items():
-            limit = limits.get(key)
-            if limit is None or limit >= len(period_orders):
-                continue
-            ordered_periods = tuple(sorted(period_orders.values()))
-            occupied_periods = tuple(sorted(orders))
-            is_allowed = len(occupied_periods) < limit or any(
-                occupied_periods == ordered_periods[start : start + limit]
-                for start in range(len(ordered_periods) - limit + 1)
-            )
-            if not is_allowed:
+            if (
+                forbidden_by_teacher_date.get(key, False)
+                and first_period_order in orders
+                and last_period_order in orders
+            ):
                 issues.append(
                     self._issue(
                         "H09",
                         str(key),
                         (
-                            "教師勤務パターン上限超過: "
-                            f"occupied_periods={occupied_periods}, limit={limit}"
+                            "教師が同日に最初と最後の時限を担当しています: "
+                            f"occupied_periods={tuple(sorted(orders))}"
                         ),
                     )
                 )

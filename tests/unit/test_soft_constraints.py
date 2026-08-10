@@ -52,7 +52,10 @@ def _context(room_capacity: int) -> SolverContext:
         class_daily_limits={("CL1", TARGET_DATE): 6, ("CL2", TARGET_DATE): 6},
         requirement_daily_limits={"Q1": None, "Q2": None},
         teacher_daily_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
-        teacher_consecutive_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
+        teacher_first_last_period_forbidden={
+            ("T1", TARGET_DATE): False,
+            ("T2", TARGET_DATE): False,
+        },
         class_attendance_limits={("CL1", TARGET_DATE): 6, ("CL2", TARGET_DATE): 6},
         period_orders={f"P{index}": index for index in range(1, 7)},
         calendar_dates=(TARGET_DATE,),
@@ -151,7 +154,10 @@ def _solve_s20(home_period_id: str) -> float:
         class_daily_limits={("CL1", TARGET_DATE): 6},
         requirement_daily_limits={"Q_HOME": None, "Q_OTHER": None},
         teacher_daily_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
-        teacher_consecutive_limits={("T1", TARGET_DATE): 6, ("T2", TARGET_DATE): 6},
+        teacher_first_last_period_forbidden={
+            ("T1", TARGET_DATE): False,
+            ("T2", TARGET_DATE): False,
+        },
         class_attendance_limits={("CL1", TARGET_DATE): 6},
         period_orders={"P1": 1, "P2": 2, "P3": 3},
         calendar_dates=(TARGET_DATE,),
@@ -232,8 +238,8 @@ def _solve_class_day_preference(
         class_daily_limits={("CL1", TARGET_DATE): 6},
         requirement_daily_limits={candidate.requirement_id: None for candidate in candidates},
         teacher_daily_limits={(candidate.teacher_id, TARGET_DATE): 6 for candidate in candidates},
-        teacher_consecutive_limits={
-            (candidate.teacher_id, TARGET_DATE): 6 for candidate in candidates
+        teacher_first_last_period_forbidden={
+            (candidate.teacher_id, TARGET_DATE): False for candidate in candidates
         },
         class_attendance_limits={("CL1", TARGET_DATE): 6},
         period_orders={f"P{index}": index for index in range(1, 7)},
@@ -364,8 +370,8 @@ def _solve_s15(
         teacher_daily_limits={
             (candidate.teacher_id, candidate.target_date): 6 for candidate in candidates
         },
-        teacher_consecutive_limits={
-            (candidate.teacher_id, candidate.target_date): 6 for candidate in candidates
+        teacher_first_last_period_forbidden={
+            (candidate.teacher_id, candidate.target_date): False for candidate in candidates
         },
         class_attendance_limits={("CL1", target_date): 6 for target_date in dates},
         period_orders={"P1": 1, "P2": 2},
@@ -435,7 +441,7 @@ def _solve_s16(
         },
         requirement_daily_limits={"Q1": None},
         teacher_daily_limits={("T1", target_date): 6 for target_date in dates},
-        teacher_consecutive_limits={("T1", target_date): 6 for target_date in dates},
+        teacher_first_last_period_forbidden={("T1", target_date): False for target_date in dates},
         class_attendance_limits={("CL1", target_date): 6 for target_date in dates},
         period_orders={
             f"P{period_index}": period_index
@@ -533,7 +539,7 @@ def _solve_s17(
         class_daily_limits={("CL1", TARGET_DATE): 6},
         requirement_daily_limits={"Q1": None},
         teacher_daily_limits={("T1", TARGET_DATE): 6},
-        teacher_consecutive_limits={("T1", TARGET_DATE): 6},
+        teacher_first_last_period_forbidden={("T1", TARGET_DATE): False},
         class_attendance_limits={("CL1", TARGET_DATE): 6},
         period_orders={"P1": 1, "P3": 3},
         calendar_dates=(TARGET_DATE,),
@@ -599,8 +605,8 @@ def _solve_s18(
         teacher_daily_limits={
             (candidate.teacher_id, candidate.target_date): 1 for candidate in candidates
         },
-        teacher_consecutive_limits={
-            (candidate.teacher_id, candidate.target_date): 1 for candidate in candidates
+        teacher_first_last_period_forbidden={
+            (candidate.teacher_id, candidate.target_date): False for candidate in candidates
         },
         class_attendance_limits={("CL1", target_date): None for target_date in dates},
         period_orders={"P1": 1},

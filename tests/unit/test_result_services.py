@@ -125,7 +125,9 @@ def test_result_validator_applies_h09_teacher_work_pattern(
     input_data = replace(
         minimal_input_data,
         placement_rules=tuple(
-            replace(rule, consecutive_limit=5) if rule.rule_id == "R_TEACHER_BASE" else rule
+            replace(rule, forbid_first_last_same_day=True)
+            if rule.rule_id == "R_TEACHER_BASE"
+            else rule
             for rule in minimal_input_data.placement_rules
         ),
     )
@@ -139,6 +141,25 @@ def test_result_validator_applies_h09_teacher_work_pattern(
     h09_issues = [issue for issue in report.issues if issue.rule_id == "H09"]
 
     assert bool(h09_issues) is has_h09_issue
+
+
+def test_result_validator_reports_missing_h21_required_lesson_slot(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=tuple(
+            replace(rule, required_lesson_period_ids=("P1", "P2"))
+            if rule.rule_id == "R_CLASS_BASE"
+            else rule
+            for rule in minimal_input_data.placement_rules
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+
+    report = ValidateResultService().execute(input_data, resolved, (_lesson(period_id="P1"),))
+
+    assert any(issue.rule_id == "H21" and issue.target.endswith("/P2") for issue in report.issues)
 
 
 def test_assign_rooms_uses_class_id_and_room_output_order_stably(

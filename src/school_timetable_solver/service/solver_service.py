@@ -206,13 +206,18 @@ class TimetableSolverService:
                 (rule.teacher_id, rule.target_date): rule.daily_hard_limit
                 for rule in resolved_rules.teacher_date_rules
             },
-            teacher_consecutive_limits={
-                (rule.teacher_id, rule.target_date): rule.consecutive_hard_limit
+            teacher_first_last_period_forbidden={
+                (rule.teacher_id, rule.target_date): bool(rule.forbid_first_last_same_day)
                 for rule in resolved_rules.teacher_date_rules
             },
             class_attendance_limits={
                 (rule.class_id, rule.target_date): rule.attendance_streak_limit
                 for rule in resolved_rules.class_date_rules
+            },
+            class_required_lesson_periods={
+                (rule.class_id, rule.target_date): rule.required_lesson_period_ids
+                for rule in resolved_rules.class_date_rules
+                if rule.required_lesson_period_ids
             },
             period_orders={period.period_id: period.output_order for period in input_data.periods},
             calendar_dates=tuple(

@@ -26,10 +26,13 @@ class SolverContext:
     class_daily_limits: dict[tuple[str, date], int | None]
     requirement_daily_limits: dict[str, int | None]
     teacher_daily_limits: dict[tuple[str, date], int | None]
-    teacher_consecutive_limits: dict[tuple[str, date], int | None]
+    teacher_first_last_period_forbidden: dict[tuple[str, date], bool]
     class_attendance_limits: dict[tuple[str, date], int | None]
     period_orders: dict[str, int]
     calendar_dates: tuple[date, ...]
+    class_required_lesson_periods: dict[tuple[str, date], tuple[str, ...]] = field(
+        default_factory=dict
+    )
     room_priorities_by_campus: dict[str, tuple[int, ...]] = field(default_factory=dict)
     class_attendance_preference_limits: dict[tuple[str, date], int | None] = field(
         default_factory=dict
