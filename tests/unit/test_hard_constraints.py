@@ -13,6 +13,7 @@ from school_timetable_solver.constraint.hard_constraints import (
     ClassRequiredLessonSlotConstraint,
     ClassRoomContinuityConstraint,
     ConsecutiveAttendanceConstraint,
+    DayLevelCandidateSymmetryConstraint,
     HomeroomAttendanceBoundaryConstraint,
     LessonCountInScopeConstraint,
     RequiredLessonCountConstraint,
@@ -124,6 +125,21 @@ def _solve_with_teacher_periods(
         (
             (
                 _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+                _candidate("Q2__1", "T1", DAY_ONE, "C2", "P3", "CL2"),
+            ),
+            True,
+        ),
+        (
+            (
+                _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+                _candidate("Q2__1", "T1", DAY_ONE, "C2", "P3", "CL2"),
+                _candidate("Q3__1", "T1", DAY_ONE, "C1", "P5", "CL3"),
+            ),
+            False,
+        ),
+        (
+            (
+                _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
                 _candidate("Q2__1", "T1", DAY_TWO, "C2", "P2", "CL2"),
             ),
             True,
@@ -137,7 +153,7 @@ def _solve_with_teacher_periods(
         ),
     ),
 )
-def test_h11_teacher_single_campus_per_day(
+def test_h11_teacher_allows_one_campus_transfer_with_a_gap(
     candidates: tuple[CandidateSlotModel, ...],
     expected_feasible: bool,
 ) -> None:
@@ -156,7 +172,7 @@ def test_h18_selects_exact_full_day_off_and_forbids_work_on_that_day() -> None:
     )
     context = _context(candidates)
     context.teacher_day_off_rules = (
-        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, DAY_ONE, DAY_TWO, 1),
+        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (DAY_ONE, DAY_TWO), 1),
     )
     TeacherDayOffQuotaConstraint().apply(context)
     context.model.add(context.assignment_variables["Q1__1"] == 1)
@@ -165,6 +181,27 @@ def test_h18_selects_exact_full_day_off_and_forbids_work_on_that_day() -> None:
 
     assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
     assert solver.value(context.teacher_day_off_variables[("T1", DAY_TWO)]) == 1
+
+
+def test_h18_creates_day_off_variables_only_for_explicit_eligible_dates() -> None:
+    excluded_date = date(2026, 7, 29)
+    context = _context(
+        (
+            _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1"),
+            _candidate("Q1__2", "T1", DAY_TWO, "C1", "P1"),
+            _candidate("Q1__3", "T1", excluded_date, "C1", "P1"),
+        )
+    )
+    context.calendar_dates = (DAY_ONE, DAY_TWO, excluded_date)
+    context.teacher_day_off_rules = (
+        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (DAY_ONE, DAY_TWO), 1),
+    )
+
+    TeacherDayOffQuotaConstraint().apply(context)
+
+    assert ("T1", DAY_ONE) in context.teacher_day_off_variables
+    assert ("T1", DAY_TWO) in context.teacher_day_off_variables
+    assert ("T1", excluded_date) not in context.teacher_day_off_variables
 
 
 def test_h18_allows_three_one_or_two_two_with_group_total() -> None:
@@ -177,8 +214,8 @@ def test_h18_allows_three_one_or_two_two_with_group_total() -> None:
     context = _context(candidates)
     context.calendar_dates = (DAY_ONE, DAY_TWO, day_three, day_four)
     context.teacher_day_off_rules = (
-        TeacherDayOffRuleModel("EARLY", "T1", True, DAY_ONE, DAY_TWO, None, 1, 2, "SUMMER", 3),
-        TeacherDayOffRuleModel("LATE", "T1", True, day_three, day_four, None, 1, 2, "SUMMER", 3),
+        TeacherDayOffRuleModel("EARLY", "T1", True, (DAY_ONE, DAY_TWO), None, 1, 2, "SUMMER", 3),
+        TeacherDayOffRuleModel("LATE", "T1", True, (day_three, day_four), None, 1, 2, "SUMMER", 3),
     )
     TeacherDayOffQuotaConstraint().apply(context)
     solver = cp_model.CpSolver()
@@ -198,8 +235,8 @@ def test_h19_rejects_leave_annotations_beyond_campus_room_columns() -> None:
     context.room_capacities["C1"] = 1
     context.teacher_home_campuses = {"T1": "C1", "T2": "C1"}
     context.teacher_day_off_rules = (
-        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, DAY_ONE, DAY_ONE, 1),
-        TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, DAY_ONE, DAY_ONE, 1),
+        TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (DAY_ONE,), 1),
+        TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, (DAY_ONE,), 1),
     )
     TeacherDayOffQuotaConstraint().apply(context)
     TeacherLeaveAnnotationCapacityConstraint().apply(context)
@@ -641,3 +678,22 @@ def test_h10_allows_exam_class_without_a_hard_attendance_limit() -> None:
     ConsecutiveAttendanceConstraint().apply(context)
 
     assert _force_all_and_solve(context) == "OPTIMAL"
+
+
+def test_day_level_symmetry_preserves_count_and_selects_earliest_candidates() -> None:
+    candidates = tuple(
+        _candidate(f"Q1__{period_id}", "T1", DAY_ONE, "C1", period_id)
+        for period_id in ("P1", "P2", "P3")
+    )
+    context = _context(candidates)
+    context.period_orders = {"P1": 1, "P2": 2, "P3": 3}
+    DayLevelCandidateSymmetryConstraint().apply(context)
+    context.model.add(sum(context.assignment_variables.values()) == 2)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert [solver.value(context.assignment_variables[c.candidate_id]) for c in candidates] == [
+        1,
+        1,
+        0,
+    ]

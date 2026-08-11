@@ -127,5 +127,6 @@ def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
         "S19",
         "S20",
         "S21",
+        "S22",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)

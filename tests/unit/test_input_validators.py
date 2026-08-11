@@ -143,7 +143,7 @@ def test_validator_rejects_fixed_and_flexible_leave_for_same_teacher(
         minimal_input_data,
         teacher_leaves=(TeacherLeaveModel("T1", target_date, ("P1",)),),
         teacher_day_off_rules=(
-            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (target_date,), 1),
         ),
     )
 
@@ -160,8 +160,8 @@ def test_validator_rejects_overlapping_or_undersupplied_day_off_ranges(
     invalid = replace(
         minimal_input_data,
         teacher_day_off_rules=(
-            TeacherDayOffRuleModel("DAY_OFF_T1_A", "T1", True, first_date, second_date, 3),
-            TeacherDayOffRuleModel("DAY_OFF_T1_B", "T1", True, second_date, second_date, 1),
+            TeacherDayOffRuleModel("DAY_OFF_T1_A", "T1", True, (first_date, second_date), 3),
+            TeacherDayOffRuleModel("DAY_OFF_T1_B", "T1", True, (second_date,), 1),
         ),
     )
 
@@ -170,6 +170,32 @@ def test_validator_rejects_overlapping_or_undersupplied_day_off_ranges(
     assert {
         "TEACHER_DAY_OFF_CAPACITY_SHORTAGE",
         "OVERLAPPING_TEACHER_DAY_OFF_RULES",
+    } <= rule_ids
+
+
+def test_validator_rejects_duplicate_and_output_disabled_day_off_dates(
+    minimal_input_data: InputDataModel,
+) -> None:
+    enabled_date = minimal_input_data.calendar_days[0].target_date
+    disabled_date = minimal_input_data.calendar_days[-1].target_date
+    invalid = replace(
+        minimal_input_data,
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel(
+                "DAY_OFF_T1",
+                "T1",
+                True,
+                (enabled_date, enabled_date, disabled_date),
+                1,
+            ),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {
+        "DUPLICATE_TEACHER_DAY_OFF_ELIGIBLE_DATE",
+        "DISABLED_TEACHER_DAY_OFF_ELIGIBLE_DATE",
     } <= rule_ids
 
 

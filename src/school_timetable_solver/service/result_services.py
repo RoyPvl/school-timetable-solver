@@ -100,7 +100,7 @@ class ValidateResultService:
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
         self._validate_first_last_periods(input_data, resolved_rules, lessons, issues)
         self._validate_attendance_streaks(input_data, resolved_rules, lessons, issues)
-        self._validate_single_campus_per_day(lessons, issues)
+        self._validate_campus_transfers(input_data, lessons, issues)
         self._validate_teacher_day_offs(input_data, lessons, teacher_day_offs, issues)
         self._report_teacher_day_off_distribution_preference(
             input_data,
@@ -122,6 +122,7 @@ class ValidateResultService:
             issues,
         )
         self._report_room_change_gap_preference(input_data, lessons, issues)
+        self._report_teacher_campus_transfer_gap_preference(input_data, lessons, issues)
         self._report_class_daily_contiguity_preference(input_data, lessons, issues)
         self._report_class_consecutive_attendance_preference(
             resolved_rules,
@@ -169,10 +170,7 @@ class ValidateResultService:
             (rule.teacher_id, target_date)
             for rule in input_data.teacher_day_off_rules
             if rule.enabled
-            for target_date in (
-                day.target_date for day in input_data.calendar_days if day.output_enabled
-            )
-            if rule.start_date <= target_date <= rule.end_date
+            for target_date in rule.eligible_dates
         }
         for key in selected_counts:
             if key not in allowed_slots:
@@ -188,10 +186,7 @@ class ValidateResultService:
                 continue
             actual = sum(
                 (rule.teacher_id, target_date) in selected_slots
-                for target_date in (
-                    day.target_date for day in input_data.calendar_days if day.output_enabled
-                )
-                if rule.start_date <= target_date <= rule.end_date
+                for target_date in rule.eligible_dates
             )
             count_is_valid = (
                 actual == rule.required_days_off
@@ -223,10 +218,7 @@ class ValidateResultService:
             actual = sum(
                 (teacher_id, target_date) in selected_slots
                 for rule in rules
-                for target_date in (
-                    day.target_date for day in input_data.calendar_days if day.output_enabled
-                )
-                if rule.start_date <= target_date <= rule.end_date
+                for target_date in rule.eligible_dates
             )
             required = rules[0].group_required_days_off
             if actual != required:
@@ -245,16 +237,12 @@ class ValidateResultService:
         issues: list[ValidationIssueModel],
     ) -> None:
         selected_slots = {(day_off.teacher_id, day_off.target_date) for day_off in teacher_day_offs}
-        output_dates = tuple(
-            day.target_date for day in input_data.calendar_days if day.output_enabled
-        )
         for rule in input_data.teacher_day_off_rules:
             if not rule.enabled or rule.preferred_days_off is None:
                 continue
             actual = sum(
                 (rule.teacher_id, target_date) in selected_slots
-                for target_date in output_dates
-                if rule.start_date <= target_date <= rule.end_date
+                for target_date in rule.eligible_dates
             )
             if actual == rule.preferred_days_off:
                 continue
@@ -805,23 +793,88 @@ class ValidateResultService:
             )
         )
 
-    def _validate_single_campus_per_day(
+    def _validate_campus_transfers(
         self,
+        input_data: InputDataModel,
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        campuses: dict[tuple[str, date], set[str]] = defaultdict(set)
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        lessons_by_teacher_day: dict[tuple[str, date], list[ScheduledLessonModel]] = defaultdict(
+            list
+        )
         for lesson in lessons:
-            campuses[(lesson.teacher_id, lesson.target_date)].add(lesson.campus_id)
-        for key, campus_ids in campuses.items():
-            if len(campus_ids) > 1:
+            lessons_by_teacher_day[(lesson.teacher_id, lesson.target_date)].append(lesson)
+        for key, daily_lessons in lessons_by_teacher_day.items():
+            ordered = sorted(daily_lessons, key=lambda item: period_orders[item.period_id])
+            campus_ids = {lesson.campus_id for lesson in ordered}
+            if len(campus_ids) > 2:
                 issues.append(
                     self._issue(
                         "H11",
                         str(key),
-                        f"同一教師・同一日に複数校舎へ配置されています: {sorted(campus_ids)}",
+                        f"同一教師・同一日に3校舎以上へ配置されています: {sorted(campus_ids)}",
                     )
                 )
+            transitions = [
+                (left, right)
+                for left, right in pairwise(ordered)
+                if left.campus_id != right.campus_id
+            ]
+            if len(transitions) > 1:
+                issues.append(
+                    self._issue(
+                        "H11",
+                        str(key),
+                        f"同一日に校舎間を2回以上移動しています: transitions={len(transitions)}",
+                    )
+                )
+            for left, right in transitions:
+                gap = period_orders[right.period_id] - period_orders[left.period_id] - 1
+                if gap < 1:
+                    issues.append(
+                        self._issue(
+                            "H11",
+                            str(key),
+                            (
+                                "校舎移動の前後に空きコマがありません: "
+                                f"{left.campus_id}/{left.period_id} -> "
+                                f"{right.campus_id}/{right.period_id}"
+                            ),
+                        )
+                    )
+
+    def _report_teacher_campus_transfer_gap_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        lessons_by_teacher_day: dict[tuple[str, date], list[ScheduledLessonModel]] = defaultdict(
+            list
+        )
+        for lesson in lessons:
+            lessons_by_teacher_day[(lesson.teacher_id, lesson.target_date)].append(lesson)
+        for key, daily_lessons in lessons_by_teacher_day.items():
+            ordered = sorted(daily_lessons, key=lambda item: period_orders[item.period_id])
+            for left, right in pairwise(ordered):
+                if left.campus_id == right.campus_id:
+                    continue
+                gap = period_orders[right.period_id] - period_orders[left.period_id] - 1
+                if gap == 1:
+                    issues.append(
+                        ValidationIssueModel(
+                            "S22",
+                            "WARNING",
+                            str(key),
+                            (
+                                "校舎移動の空きが1コマです。2コマ以上を推奨します: "
+                                f"{left.campus_id}/{left.period_id} -> "
+                                f"{right.campus_id}/{right.period_id}"
+                            ),
+                        )
+                    )
 
     def _validate_class_room_continuity(
         self,

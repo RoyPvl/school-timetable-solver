@@ -57,8 +57,7 @@ class TeacherDayOffRuleModel:
     rule_id: str
     teacher_id: str
     enabled: bool
-    start_date: date
-    end_date: date
+    eligible_dates: tuple[date, ...]
     required_days_off: int | None
     minimum_days_off: int | None = None
     maximum_days_off: int | None = None

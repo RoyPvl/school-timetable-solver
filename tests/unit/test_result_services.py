@@ -104,7 +104,7 @@ def test_validate_result_reports_output_date_teacher_leave_allowed_period_and_ca
     report = ValidateResultService().execute(input_data, resolved, lessons)
     rule_ids = {issue.rule_id for issue in report.issues}
 
-    assert {"H04", "H05", "H06", "H11", "H13", "H14"} <= rule_ids
+    assert {"H04", "H05", "H06", "H13", "H14"} <= rule_ids
 
 
 @pytest.mark.parametrize(
@@ -249,7 +249,7 @@ def test_flexible_teacher_day_off_is_validated_and_rendered_as_full_day(
     input_data = replace(
         minimal_input_data,
         teacher_day_off_rules=(
-            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (target_date,), 1),
         ),
     )
     day_offs = (ScheduledTeacherDayOffModel("T1", target_date),)
@@ -281,8 +281,8 @@ def test_result_validator_reports_teacher_day_off_work_and_annotation_overflow(
             replace(minimal_input_data.teachers[1], home_campus_id="C1"),
         ),
         teacher_day_off_rules=(
-            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, target_date, target_date, 1),
-            TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, target_date, target_date, 1),
+            TeacherDayOffRuleModel("DAY_OFF_T1", "T1", True, (target_date,), 1),
+            TeacherDayOffRuleModel("DAY_OFF_T2", "T2", True, (target_date,), 1),
         ),
     )
     resolved = RuleResolverService().execute(input_data)

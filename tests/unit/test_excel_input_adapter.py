@@ -15,7 +15,7 @@ def test_reader_accepts_contract_v0_9_with_empty_optional_rows() -> None:
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "0.9"
+    assert result.input_data.settings.schema_version == "1.0"
 
 
 def test_reader_reads_required_lesson_periods(tmp_path: Path) -> None:
@@ -173,8 +173,7 @@ def test_reader_reads_teacher_day_off_rules(tmp_path: Path) -> None:
             "DAY_OFF_T1_EARLY",
             "T1",
             True,
-            date(2026, 7, 27),
-            date(2026, 7, 29),
+            "2026-07-27|2026-07-29",
             1,
             None,
             None,
@@ -195,6 +194,7 @@ def test_reader_reads_teacher_day_off_rules(tmp_path: Path) -> None:
     assert rule.teacher_id == "T1"
     assert rule.required_days_off == 1
     assert rule.minimum_days_off is None
+    assert rule.eligible_dates == (date(2026, 7, 27), date(2026, 7, 29))
 
 
 def test_reader_reads_homeroom_boundary_rules(tmp_path: Path) -> None:

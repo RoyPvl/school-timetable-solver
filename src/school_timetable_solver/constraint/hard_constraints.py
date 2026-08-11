@@ -463,7 +463,71 @@ class ConsecutiveAttendanceConstraint:
 
 
 class TeacherSingleCampusPerDayConstraint:
-    """H11: allow each teacher to work at at most one campus per date."""
+    """H11: allow one same-day campus transfer with at least one empty period."""
+
+    rule_id = "H11"
+
+    def apply(self, context: SolverContext) -> None:
+        slot_groups: dict[tuple[str, date, str, str], list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            slot_groups[
+                (
+                    candidate.teacher_id,
+                    candidate.target_date,
+                    candidate.campus_id,
+                    candidate.period_id,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        slot_presence: dict[tuple[str, date, str, str], cp_model.IntVar] = {}
+        campus_slots: dict[tuple[str, date, str], list[cp_model.IntVar]] = defaultdict(list)
+        for key, variables in slot_groups.items():
+            teacher_id, target_date, campus_id, period_id = key
+            presence = context.model.new_bool_var(
+                f"teacher_campus_slot__{teacher_id}__{target_date.isoformat()}__"
+                f"{campus_id}__{period_id}"
+            )
+            context.model.add_max_equality(presence, variables)
+            slot_presence[key] = presence
+            campus_slots[(teacher_id, target_date, campus_id)].append(presence)
+
+        campus_day_variables: dict[tuple[str, date], list[tuple[str, cp_model.IntVar]]] = (
+            defaultdict(list)
+        )
+        for (teacher_id, target_date, campus_id), variables in campus_slots.items():
+            campus_variable = context.model.new_bool_var(
+                f"teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
+            )
+            context.model.add_max_equality(campus_variable, variables)
+            campus_day_variables[(teacher_id, target_date)].append((campus_id, campus_variable))
+        for (teacher_id, target_date), campus_variables in campus_day_variables.items():
+            context.model.add(sum(variable for _, variable in campus_variables) <= 2)
+            for (left_campus, _), (right_campus, _) in combinations(campus_variables, 2):
+                left_before_right = context.model.new_bool_var(
+                    f"teacher_campus_order__{teacher_id}__{target_date.isoformat()}__"
+                    f"{left_campus}__{right_campus}"
+                )
+                for left_period, left_order in context.period_orders.items():
+                    left = slot_presence.get((teacher_id, target_date, left_campus, left_period))
+                    if left is None:
+                        continue
+                    for right_period, right_order in context.period_orders.items():
+                        right = slot_presence.get(
+                            (teacher_id, target_date, right_campus, right_period)
+                        )
+                        if right is None:
+                            continue
+                        if right_order - left_order < 2:
+                            context.model.add(left + right <= 1).only_enforce_if(left_before_right)
+                        if left_order - right_order < 2:
+                            context.model.add(left + right <= 1).only_enforce_if(
+                                left_before_right.negated()
+                            )
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class TeacherTwoCampusesPerDayConstraint:
+    """H11: day-level relaxation allowing at most two campuses per teacher."""
 
     rule_id = "H11"
 
@@ -476,12 +540,28 @@ class TeacherSingleCampusPerDayConstraint:
         campus_day_variables: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
         for (teacher_id, target_date, campus_id), variables in campus_groups.items():
             campus_variable = context.model.new_bool_var(
-                f"teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
+                f"teacher_master_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
             )
             context.model.add_max_equality(campus_variable, variables)
             campus_day_variables[(teacher_id, target_date)].append(campus_variable)
         for variables in campus_day_variables.values():
-            context.model.add(sum(variables) <= 1)
+            context.model.add(sum(variables) <= 2)
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassRequiredLessonDayCapacityConstraint:
+    """H21: reserve enough daily class capacity for every required lesson slot."""
+
+    rule_id = "H21"
+
+    def apply(self, context: SolverContext) -> None:
+        groups: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            groups[(candidate.class_id, candidate.target_date)].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+        for key, required_period_ids in context.class_required_lesson_periods.items():
+            context.model.add(sum(groups[key]) >= len(required_period_ids))
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -506,9 +586,7 @@ class TeacherDayOffQuotaConstraint:
             if not rule.enabled:
                 continue
             rule_variables: list[cp_model.IntVar] = []
-            for target_date in context.calendar_dates:
-                if not rule.start_date <= target_date <= rule.end_date:
-                    continue
+            for target_date in rule.eligible_dates:
                 key = (rule.teacher_id, target_date)
                 day_off = context.teacher_day_off_variables.get(key)
                 if day_off is None:
@@ -559,6 +637,107 @@ class TeacherLeaveAnnotationCapacityConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class TeacherDayCapacityConstraint:
+    """H01: strengthen a day-level master with teacher slot capacity."""
+
+    rule_id = "H01"
+
+    def apply(self, context: SolverContext) -> None:
+        groups: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        periods: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for candidate in context.candidates:
+            key = (candidate.teacher_id, candidate.target_date)
+            groups[key].append(context.assignment_variables[candidate.candidate_id])
+            periods[key].add(candidate.period_id)
+        for key, variables in groups.items():
+            context.model.add(sum(variables) <= len(periods[key]))
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class ClassDayCapacityConstraint:
+    """H02: strengthen a day-level master with class slot capacity."""
+
+    rule_id = "H02"
+
+    def apply(self, context: SolverContext) -> None:
+        groups: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        periods: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for candidate in context.candidates:
+            key = (candidate.class_id, candidate.target_date)
+            groups[key].append(context.assignment_variables[candidate.candidate_id])
+            periods[key].add(candidate.period_id)
+        for key, variables in groups.items():
+            context.model.add(sum(variables) <= len(periods[key]))
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class CampusDayCapacityConstraint:
+    """H03: strengthen a day-level master with aggregate room-slot capacity."""
+
+    rule_id = "H03"
+
+    def apply(self, context: SolverContext) -> None:
+        groups: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        periods: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for candidate in context.candidates:
+            key = (candidate.campus_id, candidate.target_date)
+            groups[key].append(context.assignment_variables[candidate.candidate_id])
+            periods[key].add(candidate.period_id)
+        for (campus_id, target_date), variables in groups.items():
+            context.model.add(
+                sum(variables)
+                <= context.room_capacities[campus_id] * len(periods[(campus_id, target_date)])
+            )
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class DayLevelCandidateSymmetryConstraint:
+    """H06: remove period symmetry that has no meaning in the daily master."""
+
+    rule_id = "H06"
+
+    def apply(self, context: SolverContext) -> None:
+        groups: dict[tuple[str, date, str, str], list[tuple[int, cp_model.IntVar]]] = defaultdict(
+            list
+        )
+        for candidate in context.candidates:
+            groups[
+                (
+                    candidate.requirement_id,
+                    candidate.target_date,
+                    candidate.teacher_id,
+                    candidate.campus_id,
+                )
+            ].append(
+                (
+                    context.period_orders[candidate.period_id],
+                    context.assignment_variables[candidate.candidate_id],
+                )
+            )
+        for variables in groups.values():
+            ordered = [variable for _, variable in sorted(variables, key=lambda item: item[0])]
+            for earlier, later in pairwise(ordered):
+                context.model.add(earlier >= later)
+        context.applied_rule_ids.append(self.rule_id)
+
+
+DAY_LEVEL_MASTER_CONSTRAINTS = (
+    RequiredLessonCountConstraint(),
+    HomeroomAttendanceBoundaryConstraint(),
+    ClassDailyLimitConstraint(),
+    TeacherDailyLimitConstraint(),
+    ConsecutiveAttendanceConstraint(),
+    TeacherTwoCampusesPerDayConstraint(),
+    ClassRequiredLessonDayCapacityConstraint(),
+    TeacherDayOffQuotaConstraint(),
+    TeacherLeaveAnnotationCapacityConstraint(),
+    TeacherDayCapacityConstraint(),
+    ClassDayCapacityConstraint(),
+    CampusDayCapacityConstraint(),
+    DayLevelCandidateSymmetryConstraint(),
+)
+
+
 DEFAULT_HARD_CONSTRAINTS = (
     RequiredLessonCountConstraint(),
     LessonCountInScopeConstraint(),
@@ -593,6 +772,12 @@ HardConstraint = (
     | TeacherFirstLastPeriodConstraint
     | ConsecutiveAttendanceConstraint
     | TeacherSingleCampusPerDayConstraint
+    | TeacherTwoCampusesPerDayConstraint
+    | ClassRequiredLessonDayCapacityConstraint
     | TeacherDayOffQuotaConstraint
     | TeacherLeaveAnnotationCapacityConstraint
+    | TeacherDayCapacityConstraint
+    | ClassDayCapacityConstraint
+    | CampusDayCapacityConstraint
+    | DayLevelCandidateSymmetryConstraint
 )

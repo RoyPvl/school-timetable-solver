@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterable
 from datetime import date, timedelta
-from itertools import pairwise
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
@@ -249,12 +248,20 @@ class ReferenceIntegrityValidator:
                     )
                 )
         for rule in input_data.teacher_day_off_rules:
-            if rule.start_date > rule.end_date:
+            if not rule.eligible_dates:
                 issues.append(
                     self._issue(
-                        "INVALID_TEACHER_DAY_OFF_DATE_RANGE",
+                        "EMPTY_TEACHER_DAY_OFF_ELIGIBLE_DATES",
                         rule.rule_id,
-                        "start_dateはend_date以前である必要があります",
+                        "eligible_datesは1日以上必要です",
+                    )
+                )
+            if len(rule.eligible_dates) != len(set(rule.eligible_dates)):
+                issues.append(
+                    self._issue(
+                        "DUPLICATE_TEACHER_DAY_OFF_ELIGIBLE_DATE",
+                        rule.rule_id,
+                        "eligible_dates内に同じ日付を重複指定できません",
                     )
                 )
             if rule.required_days_off is not None and rule.required_days_off < 0:
@@ -470,12 +477,14 @@ class ReferenceIntegrityValidator:
                         "有効な教師休日日数ルールが無効教師を参照しています",
                     )
                 )
-            if rule.start_date not in calendar_dates or rule.end_date not in calendar_dates:
+            unknown_dates = set(rule.eligible_dates) - calendar_dates
+            if unknown_dates:
                 issues.append(
                     self._issue(
                         "UNKNOWN_REFERENCE",
                         rule.rule_id,
-                        "教師休日日数ルールの開始日・終了日は開講カレンダーに必要です",
+                        "教師休日日数ルールの対象日は開講カレンダーに必要です: "
+                        + ",".join(item.isoformat() for item in sorted(unknown_dates)),
                     )
                 )
 
@@ -1072,11 +1081,17 @@ class ReferenceIntegrityValidator:
 
         rules_by_teacher: dict[str, list[TeacherDayOffRuleModel]] = defaultdict(list)
         for rule in enabled_rules:
-            eligible_dates = {
-                target_date
-                for target_date in output_dates
-                if rule.start_date <= target_date <= rule.end_date
-            }
+            eligible_dates = set(rule.eligible_dates)
+            disabled_dates = eligible_dates - output_dates
+            if disabled_dates:
+                issues.append(
+                    self._issue(
+                        "DISABLED_TEACHER_DAY_OFF_ELIGIBLE_DATE",
+                        rule.rule_id,
+                        "eligible_datesはoutput_enabled=TRUEの日だけ指定できます: "
+                        + ",".join(item.isoformat() for item in sorted(disabled_dates)),
+                    )
+                )
             maximum_required = (
                 rule.required_days_off
                 if rule.required_days_off is not None
@@ -1088,7 +1103,7 @@ class ReferenceIntegrityValidator:
                         "TEACHER_DAY_OFF_CAPACITY_SHORTAGE",
                         rule.rule_id,
                         (
-                            "期間内の出力対象日数が最大休日数未満です: "
+                            "対象日数が最大休日数未満です: "
                             f"maximum={maximum_required}, available={len(eligible_dates)}"
                         ),
                     )
@@ -1135,15 +1150,16 @@ class ReferenceIntegrityValidator:
                 )
 
         for teacher_id, teacher_rules in rules_by_teacher.items():
-            ordered_rules = sorted(teacher_rules, key=lambda item: (item.start_date, item.end_date))
-            for previous, current in pairwise(ordered_rules):
-                if current.start_date <= previous.end_date:
+            for index, previous in enumerate(teacher_rules):
+                for current in teacher_rules[index + 1 :]:
+                    if not set(previous.eligible_dates) & set(current.eligible_dates):
+                        continue
                     issues.append(
                         self._issue(
                             "OVERLAPPING_TEACHER_DAY_OFF_RULES",
                             teacher_id,
                             (
-                                "同一教師の休日日数ルール期間が重複しています: "
+                                "同一教師の休日日数ルール対象日が重複しています: "
                                 f"{previous.rule_id}/{current.rule_id}"
                             ),
                         )

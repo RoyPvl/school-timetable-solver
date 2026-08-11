@@ -105,3 +105,41 @@ class SolverStatisticsModel:
     wall_time_seconds: float
     variable_count: int
     constraint_rule_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DayLevelAssignmentKeyModel:
+    """One daily count fixed between the master and period subproblem."""
+
+    requirement_id: str
+    target_date: date
+    teacher_id: str
+    campus_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DayLevelMasterSolutionModel:
+    """Values selected by one feasible day-level master solve."""
+
+    assignment_counts: tuple[tuple[DayLevelAssignmentKeyModel, int], ...]
+    teacher_day_offs: tuple[tuple[str, date, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DayLevelInfeasibilityCutModel:
+    """Master equalities whose conjunction was proven infeasible by the subproblem."""
+
+    assignment_counts: tuple[tuple[DayLevelAssignmentKeyModel, int], ...]
+    teacher_day_offs: tuple[tuple[str, date, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DecompositionIterationStatisticsModel:
+    iteration: int
+    master_status: str
+    master_wall_time_seconds: float
+    subproblem_status: str
+    subproblem_wall_time_seconds: float
+    assumption_count: int
+    infeasible_core_size: int
+    cut_count: int

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date
 from time import perf_counter
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.constraint.hard_constraints import HardConstraint
+from school_timetable_solver.constraint.hard_constraints import (
+    DAY_LEVEL_MASTER_CONSTRAINTS,
+    HardConstraint,
+)
 from school_timetable_solver.constraint.soft_constraints import SoftConstraint
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import InputDataModel
@@ -19,6 +23,10 @@ from school_timetable_solver.model.result_models import (
 )
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
+    DayLevelAssignmentKeyModel,
+    DayLevelInfeasibilityCutModel,
+    DayLevelMasterSolutionModel,
+    DecompositionIterationStatisticsModel,
     ResolvedRuleSetModel,
     SolverStatisticsModel,
 )
@@ -32,6 +40,9 @@ class TimetableSolverService:
     _LOWER_PRIORITY_TOTAL_RESERVE_RATIO = 0.75
     _HOMEROOM_INITIAL_FEASIBILITY_RATIO = 0.60
     _PRELIMINARY_DEFERRED_HARD_RULE_IDS = frozenset({"H16"})
+    _DECOMPOSITION_BUDGET_RATIO = 0.60
+    _DECOMPOSITION_MINIMUM_TOTAL_SECONDS = 60.0
+    _DECOMPOSITION_MAX_ITERATIONS = 100
 
     def __init__(
         self,
@@ -53,14 +64,63 @@ class TimetableSolverService:
             resolved_rules,
             candidate_result,
         )
+        decomposition_wall_time = 0.0
+        if request.max_solve_seconds >= self._DECOMPOSITION_MINIMUM_TOTAL_SECONDS and any(
+            rule.enabled for rule in input_data.teacher_day_off_rules
+        ):
+            (
+                decomposition_hint,
+                decomposition_wall_time,
+                decomposition_proved_infeasible,
+            ) = self._find_decomposed_hard_solution(
+                request,
+                input_data,
+                resolved_rules,
+                candidate_result,
+            )
+            if decomposition_proved_infeasible:
+                return SolverResultModel(
+                    lessons=(),
+                    teacher_day_offs=(),
+                    statistics=SolverStatisticsModel(
+                        status="INFEASIBLE",
+                        wall_time_seconds=decomposition_wall_time,
+                        variable_count=len(variables),
+                        constraint_rule_ids=tuple(
+                            constraint.rule_id for constraint in self._hard_constraints
+                        ),
+                    ),
+                )
+            if decomposition_hint is not None:
+                candidate_values, day_off_values = decomposition_hint
+                for candidate_id, value in candidate_values.items():
+                    context.model.add_hint(variables[candidate_id], value)
+                for key, value in day_off_values.items():
+                    day_off = context.model.new_bool_var(
+                        f"teacher_day_off__{key[0]}__{key[1].isoformat()}"
+                    )
+                    context.teacher_day_off_variables[key] = day_off
+                    context.model.add_hint(day_off, value)
+                LOGGER.info(
+                    "分解探索で完全Hard解を取得 hints=%d day_off_hints=%d wall_time=%f",
+                    len(candidate_values),
+                    len(day_off_values),
+                    decomposition_wall_time,
+                )
         soft_constraints_by_priority: dict[int, list[SoftConstraint]] = defaultdict(list)
         for constraint in self._soft_constraints:
             soft_constraints_by_priority[constraint.priority].append(constraint)
 
         priorities = sorted(soft_constraints_by_priority, reverse=True)
+        solve_request = request
+        if decomposition_wall_time > 0:
+            solve_request = replace(
+                request,
+                max_solve_seconds=max(request.max_solve_seconds - decomposition_wall_time, 0.001),
+            )
         if priorities:
             solver, status, total_wall_time = self._solve_soft_priorities(
-                request,
+                solve_request,
                 context,
                 variables,
                 soft_constraints_by_priority,
@@ -74,12 +134,12 @@ class TimetableSolverService:
                     "Solverフェーズ開始 phase=hard_only max_seconds=%f "
                     "variables=%d constraints=%d hints=%d"
                 ),
-                request.max_solve_seconds,
+                solve_request.max_solve_seconds,
                 len(context.model.proto.variables),
                 len(context.model.proto.constraints),
                 len(context.model.proto.solution_hint.vars),
             )
-            solver = self._new_solver(request, request.max_solve_seconds)
+            solver = self._new_solver(solve_request, solve_request.max_solve_seconds)
             status = solver.status_name(solver.solve(context.model))
             total_wall_time = solver.wall_time
             LOGGER.info(
@@ -129,16 +189,268 @@ class TimetableSolverService:
                 if solver.value(variable)
             ]
             teacher_day_offs.sort(key=lambda item: (item.target_date, item.teacher_id))
-        return SolverResultModel(
+        result = SolverResultModel(
             lessons=tuple(lessons),
             teacher_day_offs=tuple(teacher_day_offs),
             statistics=SolverStatisticsModel(
                 status=status,
-                wall_time_seconds=total_wall_time,
+                wall_time_seconds=total_wall_time + decomposition_wall_time,
                 variable_count=len(variables),
                 constraint_rule_ids=tuple(context.applied_rule_ids),
             ),
         )
+        return result
+
+    def _find_decomposed_hard_solution(
+        self,
+        request: GenerationRequestModel,
+        input_data: InputDataModel,
+        resolved_rules: ResolvedRuleSetModel,
+        candidate_result: CandidateBuildResultModel,
+    ) -> tuple[tuple[dict[str, int], dict[tuple[str, date], int]] | None, float, bool]:
+        """Iterate a relaxed daily master and an exact period-placement subproblem."""
+
+        budget = request.max_solve_seconds * self._DECOMPOSITION_BUDGET_RATIO
+        started_at = perf_counter()
+        master_context, _ = self._build_solver_context(
+            input_data,
+            resolved_rules,
+            candidate_result,
+        )
+        for constraint in DAY_LEVEL_MASTER_CONSTRAINTS:
+            self._apply_constraint(master_context, constraint, "day_master")
+        master_groups = self._daily_assignment_groups(master_context)
+        cuts: list[DayLevelInfeasibilityCutModel] = []
+        iteration_statistics: list[DecompositionIterationStatisticsModel] = []
+
+        for iteration in range(1, self._DECOMPOSITION_MAX_ITERATIONS + 1):
+            elapsed = perf_counter() - started_at
+            remaining = budget - elapsed
+            if remaining <= 0.001:
+                break
+            master_seconds = min(30.0, max(remaining * 0.80, 0.001))
+            master_solver = self._new_solver(request, master_seconds)
+            master_status = master_solver.status_name(master_solver.solve(master_context.model))
+            LOGGER.info(
+                "分解探索 iteration=%d phase=master status=%s wall_time=%f cuts=%d",
+                iteration,
+                master_status,
+                master_solver.wall_time,
+                len(cuts),
+            )
+            if master_status == "INFEASIBLE":
+                return None, perf_counter() - started_at, True
+            if master_status not in {"OPTIMAL", "FEASIBLE"}:
+                break
+            master_solution = self._read_day_level_solution(
+                master_context,
+                master_groups,
+                master_solver,
+            )
+            remaining = budget - (perf_counter() - started_at)
+            if remaining <= 0.001:
+                break
+            sub_seconds = min(120.0, remaining)
+            (
+                sub_solver,
+                sub_status,
+                sub_context,
+                assumption_map,
+            ) = self._solve_period_subproblem(
+                request,
+                input_data,
+                resolved_rules,
+                candidate_result,
+                master_solution,
+                sub_seconds,
+            )
+            core_indices: tuple[int, ...] = ()
+            if sub_status == "INFEASIBLE":
+                core_indices = tuple(sub_solver.sufficient_assumptions_for_infeasibility())
+            iteration_statistics.append(
+                DecompositionIterationStatisticsModel(
+                    iteration=iteration,
+                    master_status=master_status,
+                    master_wall_time_seconds=master_solver.wall_time,
+                    subproblem_status=sub_status,
+                    subproblem_wall_time_seconds=sub_solver.wall_time,
+                    assumption_count=len(assumption_map),
+                    infeasible_core_size=len(core_indices),
+                    cut_count=len(cuts),
+                )
+            )
+            LOGGER.info(
+                (
+                    "分解探索 iteration=%d phase=subproblem status=%s wall_time=%f "
+                    "assumptions=%d core=%d"
+                ),
+                iteration,
+                sub_status,
+                sub_solver.wall_time,
+                len(assumption_map),
+                len(core_indices),
+            )
+            if sub_status in {"OPTIMAL", "FEASIBLE"}:
+                candidate_values = {
+                    candidate.candidate_id: sub_solver.value(
+                        sub_context.assignment_variables[candidate.candidate_id]
+                    )
+                    for candidate in candidate_result.candidates
+                }
+                day_off_values = {
+                    key: sub_solver.value(variable)
+                    for key, variable in sub_context.teacher_day_off_variables.items()
+                }
+                return (candidate_values, day_off_values), perf_counter() - started_at, False
+            if sub_status != "INFEASIBLE":
+                # UNKNOWN is not evidence that the selected daily pattern is impossible.
+                break
+            cut = self._cut_from_infeasible_core(
+                master_solution,
+                core_indices,
+                assumption_map,
+            )
+            self._add_day_level_cut(master_context, master_groups, cut, len(cuts) + 1)
+            cuts.append(cut)
+
+        LOGGER.info(
+            "分解探索終了 status=NO_COMPLETE_SOLUTION iterations=%d cuts=%d wall_time=%f",
+            len(iteration_statistics),
+            len(cuts),
+            perf_counter() - started_at,
+        )
+        return None, perf_counter() - started_at, False
+
+    def _daily_assignment_groups(
+        self,
+        context: SolverContext,
+    ) -> dict[DayLevelAssignmentKeyModel, list[cp_model.IntVar]]:
+        groups: dict[DayLevelAssignmentKeyModel, list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            key = DayLevelAssignmentKeyModel(
+                candidate.requirement_id,
+                candidate.target_date,
+                candidate.teacher_id,
+                candidate.campus_id,
+            )
+            groups[key].append(context.assignment_variables[candidate.candidate_id])
+        return dict(groups)
+
+    def _read_day_level_solution(
+        self,
+        context: SolverContext,
+        groups: dict[DayLevelAssignmentKeyModel, list[cp_model.IntVar]],
+        solver: cp_model.CpSolver,
+    ) -> DayLevelMasterSolutionModel:
+        return DayLevelMasterSolutionModel(
+            assignment_counts=tuple(
+                (key, sum(solver.value(variable) for variable in variables))
+                for key, variables in sorted(
+                    groups.items(),
+                    key=lambda item: (
+                        item[0].requirement_id,
+                        item[0].target_date,
+                        item[0].teacher_id,
+                        item[0].campus_id,
+                    ),
+                )
+            ),
+            teacher_day_offs=tuple(
+                (teacher_id, target_date, solver.value(variable))
+                for (teacher_id, target_date), variable in sorted(
+                    context.teacher_day_off_variables.items()
+                )
+            ),
+        )
+
+    def _solve_period_subproblem(
+        self,
+        request: GenerationRequestModel,
+        input_data: InputDataModel,
+        resolved_rules: ResolvedRuleSetModel,
+        candidate_result: CandidateBuildResultModel,
+        master_solution: DayLevelMasterSolutionModel,
+        max_seconds: float,
+    ) -> tuple[
+        cp_model.CpSolver,
+        str,
+        SolverContext,
+        dict[int, tuple[str, object, int]],
+    ]:
+        context, _ = self._build_solver_context(input_data, resolved_rules, candidate_result)
+        for constraint in self._hard_constraints:
+            self._apply_constraint(context, constraint, "period_subproblem")
+        groups = self._daily_assignment_groups(context)
+        assumption_map: dict[int, tuple[str, object, int]] = {}
+        for index, (key, value) in enumerate(master_solution.assignment_counts):
+            literal = context.model.new_bool_var(f"daily_count_assumption__{index}")
+            context.model.add(sum(groups[key]) == value).only_enforce_if(literal)
+            context.model.add_assumption(literal)
+            assumption_map[literal.index] = ("assignment", key, value)
+        offset = len(master_solution.assignment_counts)
+        for index, (teacher_id, target_date, value) in enumerate(master_solution.teacher_day_offs):
+            literal = context.model.new_bool_var(f"day_off_assumption__{offset + index}")
+            context.model.add(
+                context.teacher_day_off_variables[(teacher_id, target_date)] == value
+            ).only_enforce_if(literal)
+            context.model.add_assumption(literal)
+            assumption_map[literal.index] = (
+                "day_off",
+                (teacher_id, target_date),
+                value,
+            )
+        solver = self._new_solver(request, max_seconds)
+        status = solver.status_name(solver.solve(context.model))
+        return solver, status, context, assumption_map
+
+    def _cut_from_infeasible_core(
+        self,
+        solution: DayLevelMasterSolutionModel,
+        core_indices: tuple[int, ...],
+        assumption_map: dict[int, tuple[str, object, int]],
+    ) -> DayLevelInfeasibilityCutModel:
+        entries = [assumption_map[index] for index in core_indices if index in assumption_map]
+        if not entries:
+            return DayLevelInfeasibilityCutModel(
+                solution.assignment_counts,
+                solution.teacher_day_offs,
+            )
+        return DayLevelInfeasibilityCutModel(
+            tuple(
+                (key, value)
+                for kind, key, value in entries
+                if kind == "assignment" and isinstance(key, DayLevelAssignmentKeyModel)
+            ),
+            tuple(
+                (key[0], key[1], value)
+                for kind, key, value in entries
+                if kind == "day_off" and isinstance(key, tuple)
+            ),
+        )
+
+    def _add_day_level_cut(
+        self,
+        context: SolverContext,
+        groups: dict[DayLevelAssignmentKeyModel, list[cp_model.IntVar]],
+        cut: DayLevelInfeasibilityCutModel,
+        cut_number: int,
+    ) -> None:
+        equalities: list[cp_model.IntVar] = []
+        for index, (key, value) in enumerate(cut.assignment_counts):
+            equality = context.model.new_bool_var(f"cut__{cut_number}__count__{index}")
+            expression = sum(groups[key])
+            context.model.add(expression == value).only_enforce_if(equality)
+            context.model.add(expression != value).only_enforce_if(equality.negated())
+            equalities.append(equality)
+        offset = len(cut.assignment_counts)
+        for index, (teacher_id, target_date, value) in enumerate(cut.teacher_day_offs):
+            equality = context.model.new_bool_var(f"cut__{cut_number}__off__{offset + index}")
+            variable = context.teacher_day_off_variables[(teacher_id, target_date)]
+            context.model.add(variable == value).only_enforce_if(equality)
+            context.model.add(variable != value).only_enforce_if(equality.negated())
+            equalities.append(equality)
+        if equalities:
+            context.model.add_bool_or([equality.negated() for equality in equalities])
 
     def _build_solver_context(
         self,

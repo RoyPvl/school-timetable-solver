@@ -364,8 +364,7 @@ class TeacherDayOffDistributionPreferenceConstraint:
                 continue
             variables = [
                 context.teacher_day_off_variables[(rule.teacher_id, target_date)]
-                for target_date in context.calendar_dates
-                if rule.start_date <= target_date <= rule.end_date
+                for target_date in rule.eligible_dates
             ]
             deviation = context.model.new_int_var(
                 0,
@@ -378,6 +377,63 @@ class TeacherDayOffDistributionPreferenceConstraint:
             )
             context.penalty_terms_by_priority.setdefault(self.priority, []).append(deviation)
             penalty_groups.setdefault((rule.rule_id,), []).append(deviation)
+        context.applied_rule_ids.append(self.rule_id)
+
+
+class TeacherCampusTransferGapPreferenceConstraint:
+    """S22: prefer two or more empty periods around a same-day campus transfer."""
+
+    rule_id = "S22"
+    priority = 33
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        slot_groups: dict[tuple[str, date, str, str], list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            slot_groups[
+                (
+                    candidate.teacher_id,
+                    candidate.target_date,
+                    candidate.campus_id,
+                    candidate.period_id,
+                )
+            ].append(context.assignment_variables[candidate.candidate_id])
+        slot_presence: dict[tuple[str, date, str, str], cp_model.IntVar] = {}
+        campuses_by_teacher_day: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for key, variables in slot_groups.items():
+            teacher_id, target_date, campus_id, period_id = key
+            presence = context.model.new_bool_var(
+                f"s22_teacher_campus_slot__{teacher_id}__{target_date.isoformat()}__"
+                f"{campus_id}__{period_id}"
+            )
+            context.model.add_max_equality(presence, variables)
+            slot_presence[key] = presence
+            campuses_by_teacher_day[(teacher_id, target_date)].add(campus_id)
+
+        for (teacher_id, target_date), campus_ids in campuses_by_teacher_day.items():
+            for left_campus, right_campus in combinations(sorted(campus_ids), 2):
+                for left_period, left_order in context.period_orders.items():
+                    left = slot_presence.get((teacher_id, target_date, left_campus, left_period))
+                    if left is None:
+                        continue
+                    for right_period, right_order in context.period_orders.items():
+                        if abs(right_order - left_order) != 2:
+                            continue
+                        right = slot_presence.get(
+                            (teacher_id, target_date, right_campus, right_period)
+                        )
+                        if right is None:
+                            continue
+                        penalty = context.model.new_bool_var(
+                            f"s22_transfer_one_gap__{teacher_id}__"
+                            f"{target_date.isoformat()}__{left_campus}__{left_period}__"
+                            f"{right_campus}__{right_period}"
+                        )
+                        context.model.add_bool_and([left, right]).only_enforce_if(penalty)
+                        context.model.add_bool_or([left.negated(), right.negated(), penalty])
+                        context.penalty_terms_by_priority.setdefault(self.priority, []).append(
+                            penalty
+                        )
         context.applied_rule_ids.append(self.rule_id)
 
 
@@ -883,6 +939,7 @@ class LessonCountInScopePreferenceConstraint:
 DEFAULT_SOFT_CONSTRAINTS = (
     HomeroomBoundarySlotPreferenceConstraint(),
     TeacherDayOffDistributionPreferenceConstraint(),
+    TeacherCampusTransferGapPreferenceConstraint(),
     RoomChangeGapPreferenceConstraint(),
     RoomPriorityPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
@@ -898,6 +955,7 @@ DEFAULT_SOFT_CONSTRAINTS = (
 SoftConstraint = (
     HomeroomBoundarySlotPreferenceConstraint
     | TeacherDayOffDistributionPreferenceConstraint
+    | TeacherCampusTransferGapPreferenceConstraint
     | RoomChangeGapPreferenceConstraint
     | RoomPriorityPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint

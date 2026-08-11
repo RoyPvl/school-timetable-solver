@@ -35,7 +35,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v0.9 workbooks into Excel-independent models."""
+    """Read input-contract v1.0 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -149,8 +149,7 @@ class ExcelInputReaderAdapter:
             "rule_id",
             "teacher_id",
             "enabled",
-            "start_date",
-            "end_date",
+            "eligible_dates",
             "required_days_off",
             "minimum_days_off",
             "maximum_days_off",
@@ -363,7 +362,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "0.9":
+        if schema_version is not None and schema_version != "1.0":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -971,8 +970,9 @@ class ExcelInputReaderAdapter:
                 self._text(row["rule_id"], sheet_name, row_number, "rule_id", issues),
                 self._text(row["teacher_id"], sheet_name, row_number, "teacher_id", issues),
                 self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
-                self._date(row["start_date"], sheet_name, row_number, "start_date", issues),
-                self._date(row["end_date"], sheet_name, row_number, "end_date", issues),
+                self._date_pipe(
+                    row["eligible_dates"], sheet_name, row_number, "eligible_dates", issues
+                ),
                 self._optional_integer(
                     row["required_days_off"],
                     sheet_name,
@@ -1010,14 +1010,13 @@ class ExcelInputReaderAdapter:
                     issues,
                 ),
             )
-            if None in values[:5]:
+            if None in values[:4]:
                 continue
             (
                 rule_id,
                 teacher_id,
                 enabled,
-                start_date,
-                end_date,
+                eligible_dates,
                 required_days_off,
                 minimum_days_off,
                 maximum_days_off,
@@ -1028,15 +1027,13 @@ class ExcelInputReaderAdapter:
             assert isinstance(rule_id, str)
             assert isinstance(teacher_id, str)
             assert isinstance(enabled, bool)
-            assert isinstance(start_date, date)
-            assert isinstance(end_date, date)
+            assert isinstance(eligible_dates, tuple)
             result.append(
                 TeacherDayOffRuleModel(
                     rule_id=rule_id,
                     teacher_id=teacher_id,
                     enabled=enabled,
-                    start_date=start_date,
-                    end_date=end_date,
+                    eligible_dates=eligible_dates,
                     required_days_off=required_days_off,
                     minimum_days_off=minimum_days_off,
                     maximum_days_off=maximum_days_off,
@@ -1337,6 +1334,43 @@ class ExcelInputReaderAdapter:
         if text is None:
             return ()
         return tuple(part.strip() for part in text.split("|") if part.strip())
+
+    def _date_pipe(
+        self,
+        value: object,
+        sheet: str,
+        row: int,
+        header: str,
+        issues: list[ValidationIssueModel],
+    ) -> tuple[date, ...] | None:
+        text = self._optional_text(value)
+        if text is None:
+            issues.append(
+                self._cell_issue(
+                    "EMPTY_TEACHER_DAY_OFF_ELIGIBLE_DATES",
+                    sheet,
+                    row,
+                    header,
+                    "対象日をyyyy-mm-dd形式で1件以上指定してください",
+                )
+            )
+            return None
+        result: list[date] = []
+        for part in (item.strip() for item in text.split("|") if item.strip()):
+            try:
+                result.append(date.fromisoformat(part))
+            except ValueError:
+                issues.append(
+                    self._cell_issue(
+                        "INVALID_TEACHER_DAY_OFF_ELIGIBLE_DATE",
+                        sheet,
+                        row,
+                        header,
+                        f"yyyy-mm-dd形式の日付ではありません: {part}",
+                    )
+                )
+                return None
+        return tuple(result)
 
     def _cell_issue(
         self,
