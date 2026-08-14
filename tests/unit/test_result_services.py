@@ -361,7 +361,7 @@ def test_result_validator_reports_lesson_count_in_scope(
     assert "H17" in {issue.rule_id for issue in report.issues}
 
 
-def test_result_validator_excludes_special_lessons_from_h20_boundary_dates(
+def test_result_validator_counts_special_lessons_for_h20_boundary_dates(
     minimal_input_data: InputDataModel,
 ) -> None:
     input_data = replace(
@@ -420,7 +420,10 @@ def test_result_validator_excludes_special_lessons_from_h20_boundary_dates(
 
     report = ValidateResultService().execute(input_data, resolved, lessons)
 
-    assert not [issue for issue in report.issues if issue.rule_id == "H20"]
+    h20_issues = [issue for issue in report.issues if issue.rule_id == "H20"]
+
+    assert len(h20_issues) == 1
+    assert h20_issues[0].target == "HB1/CL2/2026-07-27"
 
 
 def test_result_validator_warns_for_lesson_count_preference_deviation(

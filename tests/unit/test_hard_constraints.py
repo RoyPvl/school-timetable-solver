@@ -328,7 +328,7 @@ def test_h20_rejects_boundary_attendance_day_without_homeroom_regular_lesson() -
     assert _force_all_and_solve(context) == "INFEASIBLE"
 
 
-def test_h20_excludes_special_lessons_from_first_and_last_day_detection() -> None:
+def test_h20_counts_a_special_lesson_only_day_as_the_first_attendance_day() -> None:
     candidates = (
         _candidate("Q_SPECIAL__D1", "T2", DAY_ONE, "C1", "P3"),
         _candidate("Q_HOME__D2", "T1", DAY_TWO, "C1", "P1"),
@@ -336,7 +336,84 @@ def test_h20_excludes_special_lessons_from_first_and_last_day_detection() -> Non
     context = _context(candidates)
     context.homeroom_boundary_rules = (
         ResolvedHomeroomBoundaryRuleModel(
-            "HB1", "CL1", "C1", "T1", ("Q_HOME",), ("Q_HOME",), DAY_ONE, DAY_TWO
+            "HB1",
+            "CL1",
+            "C1",
+            "T1",
+            ("Q_SPECIAL", "Q_HOME"),
+            ("Q_HOME",),
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h20_allows_a_special_and_homeroom_regular_lesson_on_the_first_day() -> None:
+    candidates = (
+        _candidate("Q_SPECIAL__D1", "T2", DAY_ONE, "C1", "P1"),
+        _candidate("Q_HOME__D1", "T1", DAY_ONE, "C1", "P2"),
+        _candidate("Q_HOME__D2", "T1", DAY_TWO, "C1", "P1"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL1",
+            "C1",
+            "T1",
+            ("Q_SPECIAL", "Q_HOME"),
+            ("Q_HOME",),
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) in {"OPTIMAL", "FEASIBLE"}
+
+
+def test_h20_counts_a_special_lesson_only_day_as_the_last_attendance_day() -> None:
+    candidates = (
+        _candidate("Q_HOME__D1", "T1", DAY_ONE, "C1", "P1"),
+        _candidate("Q_SPECIAL__D2", "T2", DAY_TWO, "C1", "P3"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL1",
+            "C1",
+            "T1",
+            ("Q_HOME", "Q_SPECIAL"),
+            ("Q_HOME",),
+            DAY_ONE,
+            DAY_TWO,
+        ),
+    )
+    HomeroomAttendanceBoundaryConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h20_allows_one_homeroom_regular_lesson_when_first_and_last_day_are_identical() -> None:
+    candidates = (
+        _candidate("Q_SPECIAL", "T2", DAY_ONE, "C1", "P1"),
+        _candidate("Q_HOME", "T1", DAY_ONE, "C1", "P2"),
+    )
+    context = _context(candidates)
+    context.homeroom_boundary_rules = (
+        ResolvedHomeroomBoundaryRuleModel(
+            "HB1",
+            "CL1",
+            "C1",
+            "T1",
+            ("Q_SPECIAL", "Q_HOME"),
+            ("Q_HOME",),
+            DAY_ONE,
+            DAY_ONE,
         ),
     )
     HomeroomAttendanceBoundaryConstraint().apply(context)

@@ -280,10 +280,11 @@ class RuleResolverService:
             for class_model in input_data.classes:
                 if not class_model.enabled:
                     continue
+                # Attendance is determined by every valid lesson; only the required
+                # homeroom lesson remains limited to the teacher's regular lessons.
                 attendance_requirement_ids = tuple(
                     requirement.requirement_id
                     for requirement in requirements_by_class[class_model.class_id]
-                    if requirement.subject_id in regular_subject_ids
                 )
                 eligible_requirement_ids = tuple(
                     requirement.requirement_id

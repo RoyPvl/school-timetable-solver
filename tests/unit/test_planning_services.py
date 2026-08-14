@@ -8,9 +8,11 @@ from school_timetable_solver.model.input_models import (
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
+    LessonRequirementModel,
     PlacementRuleModel,
     TeacherLeaveModel,
 )
+from school_timetable_solver.model.master_models import SubjectModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
@@ -139,7 +141,7 @@ def test_rule_resolver_allows_missing_hard_attendance_limit_and_resolves_prefere
     assert all(rule.preferred_attendance_streak_limit == 3 for rule in resolved.class_date_rules)
 
 
-def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_regular_lesson(
+def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_all_lessons(
     minimal_input_data: InputDataModel,
 ) -> None:
     rule = HomeroomBoundaryRuleModel(
@@ -152,7 +154,15 @@ def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_regu
         date(2026, 7, 27),
         date(2026, 7, 28),
     )
-    input_data = replace(minimal_input_data, homeroom_boundary_rules=(rule,))
+    input_data = replace(
+        minimal_input_data,
+        subjects=(*minimal_input_data.subjects, SubjectModel("S3", "特別講座", "special", True)),
+        lesson_requirements=(
+            *minimal_input_data.lesson_requirements,
+            LessonRequirementModel("Q3", "CL2", "S3", "T1", 1, 1, True),
+        ),
+        homeroom_boundary_rules=(rule,),
+    )
 
     resolved = RuleResolverService().execute(input_data)
 
@@ -161,7 +171,7 @@ def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_regu
     boundary = resolved.homeroom_boundary_rules[0]
     assert boundary.class_id == "CL2"
     assert boundary.teacher_id == "T2"
-    assert boundary.attendance_requirement_ids == ("Q2",)
+    assert boundary.attendance_requirement_ids == ("Q2", "Q3")
     assert boundary.eligible_requirement_ids == ("Q2",)
 
 

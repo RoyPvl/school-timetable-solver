@@ -58,7 +58,7 @@ class LessonCountInScopeConstraint:
 
 
 class HomeroomAttendanceBoundaryConstraint:
-    """H20: require a regular homeroom-teacher lesson on each attendance boundary day."""
+    """H20: require a regular homeroom lesson on each boundary day with any lesson."""
 
     rule_id = "H20"
 
