@@ -346,6 +346,89 @@ class ClassRoomContinuityConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassSuccessorConstraint:
+    """H23: place each second class after one configured first class in the same room."""
+
+    rule_id = "H23"
+
+    def apply(self, context: SolverContext) -> None:
+        first_classes_by_second: dict[str, set[str]] = defaultdict(set)
+        for rule in context.class_pair_overlap_rules:
+            if rule.enabled:
+                first_classes_by_second[rule.second_class_id].add(rule.first_class_id)
+        if not first_classes_by_second:
+            context.applied_rule_ids.append(self.rule_id)
+            return
+
+        ordered_period_ids = tuple(
+            period_id
+            for period_id, _ in sorted(context.period_orders.items(), key=lambda item: item[1])
+        )
+        classes_by_campus_day: dict[tuple[str, date], set[str]] = defaultdict(set)
+        for campus_id, target_date, class_id in context.class_room_variables:
+            classes_by_campus_day[(campus_id, target_date)].add(class_id)
+
+        for (campus_id, target_date), class_ids in classes_by_campus_day.items():
+            for second_class_id, first_class_ids in first_classes_by_second.items():
+                if second_class_id not in class_ids:
+                    continue
+                second_slots = tuple(
+                    context.class_slot_variables.get(
+                        (campus_id, target_date, second_class_id, period_id)
+                    )
+                    for period_id in ordered_period_ids
+                )
+                present_second_slots = tuple(slot for slot in second_slots if slot is not None)
+                if not present_second_slots:
+                    continue
+                second_day = context.model.new_bool_var(
+                    f"h23_second_day__{second_class_id}__{target_date.isoformat()}"
+                )
+                context.model.add_max_equality(second_day, present_second_slots)
+
+                matches: list[cp_model.IntVar] = []
+                second_room = context.class_room_variables[
+                    (campus_id, target_date, second_class_id)
+                ]
+                for first_class_id in sorted(first_class_ids):
+                    if first_class_id not in class_ids:
+                        continue
+                    first_slots = tuple(
+                        context.class_slot_variables.get(
+                            (campus_id, target_date, first_class_id, period_id)
+                        )
+                        for period_id in ordered_period_ids
+                    )
+                    first_room = context.class_room_variables[
+                        (campus_id, target_date, first_class_id)
+                    ]
+                    for index in range(len(ordered_period_ids) - 1):
+                        first_slot = first_slots[index]
+                        second_slot = second_slots[index + 1]
+                        if first_slot is None or second_slot is None:
+                            continue
+                        match = context.model.new_bool_var(
+                            f"h23_match__{first_class_id}__{second_class_id}__"
+                            f"{target_date.isoformat()}__{ordered_period_ids[index]}"
+                        )
+                        context.model.add(match <= first_slot)
+                        context.model.add(match <= second_slot)
+                        for later_first in first_slots[index + 1 :]:
+                            if later_first is not None:
+                                context.model.add(match + later_first <= 1)
+                        for earlier_second in second_slots[: index + 1]:
+                            if earlier_second is not None:
+                                context.model.add(match + earlier_second <= 1)
+                        context.model.add(first_room == second_room).only_enforce_if(match)
+                        matches.append(match)
+
+                if matches:
+                    context.model.add(sum(matches) == second_day)
+                else:
+                    context.model.add(second_day == 0)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassLongInternalGapConstraint:
     """H16: forbid two consecutive empty periods between one class's lessons."""
 
@@ -586,6 +669,49 @@ class ClassRequiredLessonDayCapacityConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassSuccessorDayConstraint:
+    """H23: day-level relaxation requiring a first-class day for each second-class day."""
+
+    rule_id = "H23"
+
+    def apply(self, context: SolverContext) -> None:
+        first_classes_by_second: dict[str, set[str]] = defaultdict(set)
+        for rule in context.class_pair_overlap_rules:
+            if rule.enabled:
+                first_classes_by_second[rule.second_class_id].add(rule.first_class_id)
+        variables_by_class_day: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_day[(candidate.class_id, candidate.target_date)].append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+
+        for second_class_id, first_class_ids in first_classes_by_second.items():
+            for target_date in context.calendar_dates:
+                second_variables = variables_by_class_day.get((second_class_id, target_date), ())
+                if not second_variables:
+                    continue
+                second_day = context.model.new_bool_var(
+                    f"h23_master_second_day__{second_class_id}__{target_date.isoformat()}"
+                )
+                context.model.add_max_equality(second_day, second_variables)
+                first_days: list[cp_model.IntVar] = []
+                for first_class_id in sorted(first_class_ids):
+                    first_variables = variables_by_class_day.get((first_class_id, target_date), ())
+                    if not first_variables:
+                        continue
+                    first_day = context.model.new_bool_var(
+                        f"h23_master_first_day__{first_class_id}__{second_class_id}__"
+                        f"{target_date.isoformat()}"
+                    )
+                    context.model.add_max_equality(first_day, first_variables)
+                    first_days.append(first_day)
+                if first_days:
+                    context.model.add(second_day <= sum(first_days))
+                else:
+                    context.model.add(second_day == 0)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class TeacherDayOffQuotaConstraint:
     """H18: select the exact number of full teacher days off in each input range."""
 
@@ -750,6 +876,7 @@ DAY_LEVEL_MASTER_CONSTRAINTS = (
     ConsecutiveAttendanceConstraint(),
     TeacherTwoCampusesPerDayConstraint(),
     ClassRequiredLessonDayCapacityConstraint(),
+    ClassSuccessorDayConstraint(),
     TeacherDayOffQuotaConstraint(),
     TeacherLeaveAnnotationCapacityConstraint(),
     TeacherDayCapacityConstraint(),
@@ -769,6 +896,7 @@ DEFAULT_HARD_CONSTRAINTS = (
     ClassPairOverlapConstraint(),
     CampusRoomCapacityConstraint(),
     ClassRoomContinuityConstraint(),
+    ClassSuccessorConstraint(),
     ClassLongInternalGapConstraint(),
     ClassDailyLimitConstraint(),
     TeacherDailyLimitConstraint(),
@@ -789,6 +917,7 @@ HardConstraint = (
     | ClassPairOverlapConstraint
     | CampusRoomCapacityConstraint
     | ClassRoomContinuityConstraint
+    | ClassSuccessorConstraint
     | ClassLongInternalGapConstraint
     | ClassDailyLimitConstraint
     | TeacherDailyLimitConstraint
@@ -797,6 +926,7 @@ HardConstraint = (
     | TeacherSingleCampusPerDayConstraint
     | TeacherTwoCampusesPerDayConstraint
     | ClassRequiredLessonDayCapacityConstraint
+    | ClassSuccessorDayConstraint
     | TeacherDayOffQuotaConstraint
     | TeacherLeaveAnnotationCapacityConstraint
     | TeacherDayCapacityConstraint
