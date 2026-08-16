@@ -158,9 +158,7 @@ def test_h23_requires_same_room_for_selected_first_and_second() -> None:
 def test_h23_day_master_rejects_second_without_any_first_day() -> None:
     candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
     context = _context(candidates)
-    context.class_pair_overlap_rules = (
-        ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),
-    )
+    context.class_pair_overlap_rules = (ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),)
     ClassSuccessorDayConstraint().apply(context)
 
     status = _solve(context, {("S", "P3")})
@@ -171,9 +169,7 @@ def test_h23_day_master_rejects_second_without_any_first_day() -> None:
 def test_s10_excludes_configured_first_to_second_transition() -> None:
     candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
     context = _context(candidates)
-    context.class_pair_overlap_rules = (
-        ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),
-    )
+    context.class_pair_overlap_rules = (ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),)
     ClassRoomContinuityConstraint().apply(context)
 
     RoomChangeGapPreferenceConstraint().apply(context)
@@ -184,9 +180,7 @@ def test_s10_excludes_configured_first_to_second_transition() -> None:
 def test_s12_excludes_configured_second_class() -> None:
     candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
     context = _context(candidates)
-    context.class_pair_overlap_rules = (
-        ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),
-    )
+    context.class_pair_overlap_rules = (ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),)
     ClassRoomContinuityConstraint().apply(context)
 
     ClassSingleLessonDayPreferenceConstraint().apply(context)
@@ -196,4 +190,6 @@ def test_s12_excludes_configured_second_class() -> None:
 
 def test_h23_is_registered_in_full_and_day_level_models() -> None:
     assert any(isinstance(item, ClassSuccessorConstraint) for item in DEFAULT_HARD_CONSTRAINTS)
-    assert any(isinstance(item, ClassSuccessorDayConstraint) for item in DAY_LEVEL_MASTER_CONSTRAINTS)
+    assert any(
+        isinstance(item, ClassSuccessorDayConstraint) for item in DAY_LEVEL_MASTER_CONSTRAINTS
+    )
