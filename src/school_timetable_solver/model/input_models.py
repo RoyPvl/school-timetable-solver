@@ -79,6 +79,15 @@ class HomeroomBoundaryRuleModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassPairOverlapRuleModel:
+    rule_id: str
+    rule_name: str
+    enabled: bool
+    first_class_id: str
+    second_class_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class PlacementRuleModel:
     rule_id: str
     rule_name: str
@@ -149,3 +158,4 @@ class InputDataModel:
     ] = ()
     teacher_day_off_rules: tuple[TeacherDayOffRuleModel, ...] = ()
     homeroom_boundary_rules: tuple[HomeroomBoundaryRuleModel, ...] = ()
+    class_pair_overlap_rules: tuple[ClassPairOverlapRuleModel, ...] = ()

@@ -20,6 +20,7 @@ from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     EffectiveClassDateRuleModel,
     EffectiveTeacherDateRuleModel,
+    ResolvedAttendanceGroupModel,
     ResolvedHomeroomBoundaryRuleModel,
     ResolvedLessonCountPreferenceRuleModel,
     ResolvedLessonCountRuleModel,
@@ -248,6 +249,7 @@ class RuleResolverService:
             issues,
         )
         homeroom_boundary_rules = self._resolve_homeroom_boundary_rules(input_data, issues)
+        attendance_groups = self._resolve_attendance_groups(input_data, class_rules, issues)
         return ResolvedRuleSetModel(
             class_date_rules=tuple(class_rules),
             teacher_date_rules=tuple(teacher_rules),
@@ -255,7 +257,101 @@ class RuleResolverService:
             lesson_count_rules=tuple(lesson_count_rules),
             lesson_count_preference_rules=tuple(lesson_count_preference_rules),
             homeroom_boundary_rules=tuple(homeroom_boundary_rules),
+            attendance_groups=tuple(attendance_groups),
         )
+
+    def _resolve_attendance_groups(
+        self,
+        input_data: InputDataModel,
+        class_rules: list[EffectiveClassDateRuleModel],
+        issues: list[RuleResolutionIssueModel],
+    ) -> list[ResolvedAttendanceGroupModel]:
+        rules_by_class_date = {(rule.class_id, rule.target_date): rule for rule in class_rules}
+        enabled_classes = {item.class_id for item in input_data.classes if item.enabled}
+        paired_class_ids: set[str] = set()
+        groups: list[ResolvedAttendanceGroupModel] = []
+
+        for pair_rule in input_data.class_pair_overlap_rules:
+            if not pair_rule.enabled:
+                continue
+            class_ids = (pair_rule.first_class_id, pair_rule.second_class_id)
+            paired_class_ids.update(class_ids)
+            attendance_limits: list[tuple[date, int | None]] = []
+            preference_limits: list[tuple[date, int | None]] = []
+            target_dates = sorted(
+                target_date
+                for class_id, target_date in rules_by_class_date
+                if class_id == pair_rule.first_class_id
+            )
+            for target_date in target_dates:
+                first = rules_by_class_date[(pair_rule.first_class_id, target_date)]
+                second = rules_by_class_date[(pair_rule.second_class_id, target_date)]
+                if first.attendance_streak_limit != second.attendance_streak_limit:
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "PAIR_ATTENDANCE_LIMIT_MISMATCH",
+                            f"pair={pair_rule.rule_id}/date={target_date}",
+                            (
+                                "クラス組のattendance_streak_limitが一致しません: "
+                                f"{pair_rule.first_class_id}={first.attendance_streak_limit}, "
+                                f"{pair_rule.second_class_id}={second.attendance_streak_limit}"
+                            ),
+                        )
+                    )
+                if (
+                    first.preferred_attendance_streak_limit
+                    != second.preferred_attendance_streak_limit
+                ):
+                    issues.append(
+                        RuleResolutionIssueModel(
+                            "PAIR_ATTENDANCE_PREFERENCE_LIMIT_MISMATCH",
+                            f"pair={pair_rule.rule_id}/date={target_date}",
+                            (
+                                "クラス組のpreferred_attendance_streak_limitが一致しません: "
+                                f"{pair_rule.first_class_id}="
+                                f"{first.preferred_attendance_streak_limit}, "
+                                f"{pair_rule.second_class_id}="
+                                f"{second.preferred_attendance_streak_limit}"
+                            ),
+                        )
+                    )
+                attendance_limits.append((target_date, first.attendance_streak_limit))
+                preference_limits.append((target_date, first.preferred_attendance_streak_limit))
+            groups.append(
+                ResolvedAttendanceGroupModel(
+                    group_id=f"PAIR::{pair_rule.rule_id}",
+                    source_pair_rule_id=pair_rule.rule_id,
+                    class_ids=class_ids,
+                    attendance_streak_limits=tuple(attendance_limits),
+                    preferred_attendance_streak_limits=tuple(preference_limits),
+                )
+            )
+
+        for class_id in sorted(enabled_classes - paired_class_ids):
+            class_date_rules = sorted(
+                (
+                    rule
+                    for (candidate_class_id, _), rule in rules_by_class_date.items()
+                    if candidate_class_id == class_id
+                ),
+                key=lambda item: item.target_date,
+            )
+            groups.append(
+                ResolvedAttendanceGroupModel(
+                    group_id=f"CLASS::{class_id}",
+                    source_pair_rule_id=None,
+                    class_ids=(class_id,),
+                    attendance_streak_limits=tuple(
+                        (rule.target_date, rule.attendance_streak_limit)
+                        for rule in class_date_rules
+                    ),
+                    preferred_attendance_streak_limits=tuple(
+                        (rule.target_date, rule.preferred_attendance_streak_limit)
+                        for rule in class_date_rules
+                    ),
+                )
+            )
+        return groups
 
     def _resolve_homeroom_boundary_rules(
         self,

@@ -10,12 +10,12 @@ from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReader
 SAMPLE = Path("projects/sample/input/時間割入力_サンプル.xlsx")
 
 
-def test_reader_accepts_contract_v0_9_with_empty_optional_rows() -> None:
+def test_reader_accepts_contract_v1_1_with_empty_optional_rows() -> None:
     result = ExcelInputReaderAdapter().read(SAMPLE)
 
     assert result.input_data is not None
     assert not [issue for issue in result.issues if issue.severity == "ERROR"]
-    assert result.input_data.settings.schema_version == "1.0"
+    assert result.input_data.settings.schema_version == "1.1"
 
 
 def test_reader_reads_required_lesson_periods(tmp_path: Path) -> None:
@@ -34,6 +34,7 @@ def test_reader_reads_required_lesson_periods(tmp_path: Path) -> None:
     assert not result.input_data.lesson_count_rule_segments
     assert not result.input_data.lesson_count_preference_rule_segments
     assert not result.input_data.homeroom_boundary_rules
+    assert not result.input_data.class_pair_overlap_rules
     room_priorities = {room.room_id: room.priority for room in result.input_data.rooms}
     assert room_priorities == {"R1": 0, "R2": 100, "R3": 100, "R4": 0}
     exam_rule = next(
@@ -73,6 +74,21 @@ def test_reader_normalizes_full_day_and_partial_teacher_leaves(
         "P6",
     )
     assert teacher_leaves[1].unavailable_period_ids == ("P4", "P6")
+
+
+def test_reader_reads_class_pair_overlap_rules(tmp_path: Path) -> None:
+    workbook = load_workbook(SAMPLE)
+    workbook["17_クラス組重複禁止ルール"].append(
+        ("PAIR1", "小学Aと中学B", True, "CL1", "CL2", None)
+    )
+    target = tmp_path / "class-pair-overlap-rules.xlsx"
+    workbook.save(target)
+
+    result = ExcelInputReaderAdapter().read(target)
+
+    assert result.input_data is not None
+    assert result.input_data.class_pair_overlap_rules[0].first_class_id == "CL1"
+    assert result.input_data.class_pair_overlap_rules[0].second_class_id == "CL2"
 
 
 def test_reader_normalizes_whitespace_only_teacher_name_to_empty_string(

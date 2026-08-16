@@ -107,6 +107,7 @@ def test_hard_constraint_registration_has_unique_formal_rule_ids() -> None:
         "H19",
         "H20",
         "H21",
+        "H22",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_HARD_CONSTRAINTS)
 

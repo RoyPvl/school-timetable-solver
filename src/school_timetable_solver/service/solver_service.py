@@ -539,12 +539,26 @@ class TimetableSolverService:
                 (rule.class_id, rule.target_date): rule.preferred_attendance_streak_limit
                 for rule in resolved_rules.class_date_rules
             },
+            attendance_group_class_ids={
+                group.group_id: group.class_ids for group in resolved_rules.attendance_groups
+            },
+            attendance_group_limits={
+                (group.group_id, target_date): limit
+                for group in resolved_rules.attendance_groups
+                for target_date, limit in group.attendance_streak_limits
+            },
+            attendance_group_preference_limits={
+                (group.group_id, target_date): limit
+                for group in resolved_rules.attendance_groups
+                for target_date, limit in group.preferred_attendance_streak_limits
+            },
             lesson_count_rules=resolved_rules.lesson_count_rules,
             teacher_day_off_rules=input_data.teacher_day_off_rules,
             teacher_home_campuses=teacher_home_campuses,
             fixed_teacher_leave_cell_counts=dict(fixed_teacher_leave_cell_counts),
             lesson_count_preference_rules=resolved_rules.lesson_count_preference_rules,
             homeroom_boundary_rules=resolved_rules.homeroom_boundary_rules,
+            class_pair_overlap_rules=input_data.class_pair_overlap_rules,
         )
         return context, variables
 

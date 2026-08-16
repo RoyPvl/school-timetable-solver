@@ -65,6 +65,10 @@ class ReferenceIntegrityValidator:
                 "homeroom_boundary_rule_id",
                 (item.rule_id for item in input_data.homeroom_boundary_rules),
             ),
+            (
+                "class_pair_overlap_rule_id",
+                (item.rule_id for item in input_data.class_pair_overlap_rules),
+            ),
         )
         for label, identifiers in id_groups:
             for identifier, count in Counter(identifiers).items():
@@ -110,6 +114,20 @@ class ReferenceIntegrityValidator:
                             "教師休みのunavailable_periodsに重複があります: "
                             f"{sorted(duplicate_period_ids)}"
                         ),
+                    )
+                )
+        enabled_class_pairs = Counter(
+            frozenset((rule.first_class_id, rule.second_class_id))
+            for rule in input_data.class_pair_overlap_rules
+            if rule.enabled
+        )
+        for class_pair, count in enabled_class_pairs.items():
+            if count > 1:
+                issues.append(
+                    self._issue(
+                        "DUPLICATE_CLASS_PAIR_OVERLAP_RULE",
+                        "/".join(sorted(class_pair)),
+                        "有効なクラス組重複禁止ルールが逆順を含めて重複しています",
                     )
                 )
         enabled_pairs = Counter(
@@ -400,6 +418,51 @@ class ReferenceIntegrityValidator:
                         "DISABLED_MASTER_REFERENCE",
                         class_model.class_id,
                         "有効クラスが無効校舎を参照しています",
+                    )
+                )
+        for rule in input_data.class_pair_overlap_rules:
+            for field_name, class_id in (
+                ("first_class_id", rule.first_class_id),
+                ("second_class_id", rule.second_class_id),
+            ):
+                self._require_reference(
+                    issues,
+                    rule.rule_id,
+                    field_name,
+                    class_id,
+                    classes,
+                )
+            if rule.first_class_id == rule.second_class_id:
+                issues.append(
+                    self._issue(
+                        "INVALID_CLASS_PAIR_OVERLAP_SELF_REFERENCE",
+                        rule.rule_id,
+                        "クラス組には異なる2クラスを指定してください",
+                    )
+                )
+            first_class = classes.get(rule.first_class_id)
+            second_class = classes.get(rule.second_class_id)
+            if rule.enabled and any(
+                class_model is not None and not class_model.enabled
+                for class_model in (first_class, second_class)
+            ):
+                issues.append(
+                    self._issue(
+                        "DISABLED_MASTER_REFERENCE",
+                        rule.rule_id,
+                        "有効なクラス組重複禁止ルールが無効クラスを参照しています",
+                    )
+                )
+            if (
+                first_class is not None
+                and second_class is not None
+                and first_class.campus_id != second_class.campus_id
+            ):
+                issues.append(
+                    self._issue(
+                        "CLASS_PAIR_CAMPUS_MISMATCH",
+                        rule.rule_id,
+                        "クラス組には同一校舎のクラスを指定してください",
                     )
                 )
         for requirement in input_data.lesson_requirements:

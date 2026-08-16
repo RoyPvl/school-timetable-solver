@@ -65,6 +65,15 @@ class ResolvedHomeroomBoundaryRuleModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedAttendanceGroupModel:
+    group_id: str
+    source_pair_rule_id: str | None
+    class_ids: tuple[str, ...]
+    attendance_streak_limits: tuple[tuple[date, int | None], ...]
+    preferred_attendance_streak_limits: tuple[tuple[date, int | None], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedRuleSetModel:
     class_date_rules: tuple[EffectiveClassDateRuleModel, ...]
     teacher_date_rules: tuple[EffectiveTeacherDateRuleModel, ...]
@@ -72,6 +81,7 @@ class ResolvedRuleSetModel:
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
     homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
+    attendance_groups: tuple[ResolvedAttendanceGroupModel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

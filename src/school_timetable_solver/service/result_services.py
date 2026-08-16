@@ -22,6 +22,7 @@ from school_timetable_solver.model.result_models import (
 )
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
+    EffectiveClassDateRuleModel,
     ResolvedRuleSetModel,
 )
 
@@ -96,6 +97,7 @@ class ValidateResultService:
         self._validate_homeroom_attendance_boundaries(resolved_rules, lessons, issues)
         self._validate_required_lesson_slots(resolved_rules, lessons, issues)
         self._validate_overlaps(lessons, issues)
+        self._validate_class_pair_overlaps(input_data, lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
         self._validate_first_last_periods(input_data, resolved_rules, lessons, issues)
@@ -434,6 +436,34 @@ class ValidateResultService:
                         self._issue(rule_id, str(key), f"{label}が同一時限に重複しています")
                     )
 
+    def _validate_class_pair_overlaps(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        occupied_slots_by_class: dict[str, set[tuple[date, str]]] = defaultdict(set)
+        for lesson in lessons:
+            occupied_slots_by_class[lesson.class_id].add((lesson.target_date, lesson.period_id))
+        for rule in input_data.class_pair_overlap_rules:
+            if not rule.enabled:
+                continue
+            overlapping_slots = sorted(
+                occupied_slots_by_class[rule.first_class_id]
+                & occupied_slots_by_class[rule.second_class_id]
+            )
+            for target_date, period_id in overlapping_slots:
+                issues.append(
+                    self._issue(
+                        "H22",
+                        f"{rule.rule_id}/{target_date}/{period_id}",
+                        (
+                            "重複禁止クラス組が同一時限に配置されています: "
+                            f"{rule.first_class_id}/{rule.second_class_id}"
+                        ),
+                    )
+                )
+
     def _validate_candidate_facts(
         self,
         input_data: InputDataModel,
@@ -691,40 +721,35 @@ class ValidateResultService:
         issues: list[ValidationIssueModel],
     ) -> None:
         attendance = {(item.class_id, item.target_date) for item in lessons}
-        limits = {
-            (item.class_id, item.target_date): item.attendance_streak_limit
-            for item in resolved_rules.class_date_rules
-        }
         dates = tuple(
             sorted(day.target_date for day in input_data.calendar_days if day.output_enabled)
         )
-        attendance_streaks: dict[str, int] = defaultdict(int)
-        previous_date_by_class: dict[str, date] = {}
-        class_ids = sorted({class_id for class_id, _ in limits})
-        for target_date in dates:
-            for class_id in class_ids:
-                if (class_id, target_date) not in attendance:
-                    attendance_streaks[class_id] = 0
-                    previous_date_by_class.pop(class_id, None)
+        for group_id, class_ids, limits, _ in self._attendance_group_data(resolved_rules):
+            attendance_streak = 0
+            previous_date: date | None = None
+            for target_date in dates:
+                attends = any((class_id, target_date) in attendance for class_id in class_ids)
+                if not attends:
+                    attendance_streak = 0
+                    previous_date = None
                     continue
-                previous_date = previous_date_by_class.get(class_id)
-                attendance_streaks[class_id] = (
-                    attendance_streaks[class_id] + 1
+                attendance_streak = (
+                    attendance_streak + 1
                     if previous_date is not None
                     and target_date - previous_date == timedelta(days=1)
                     else 1
                 )
-                previous_date_by_class[class_id] = target_date
-                limit = limits[(class_id, target_date)]
-                if limit is None or attendance_streaks[class_id] <= limit:
+                previous_date = target_date
+                limit = limits.get(target_date)
+                if limit is None or attendance_streak <= limit:
                     continue
                 issues.append(
                     self._issue(
                         "H10",
-                        f"{class_id}/{target_date}",
+                        f"{group_id}/{target_date}",
                         (
                             "最大連続登校日数を超過しています: "
-                            f"{attendance_streaks[class_id]}>{limit}"
+                            f"classes={'|'.join(class_ids)}, {attendance_streak}>{limit}"
                         ),
                     )
                 )
@@ -735,20 +760,20 @@ class ValidateResultService:
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
-        preferences = {
-            (item.class_id, item.target_date): item.preferred_attendance_streak_limit
-            for item in resolved_rules.class_date_rules
-        }
         attendance_dates: dict[str, set[date]] = defaultdict(set)
         for lesson in lessons:
             attendance_dates[lesson.class_id].add(lesson.target_date)
 
-        for class_id, class_dates in attendance_dates.items():
+        for group_id, class_ids, _, preferences in self._attendance_group_data(resolved_rules):
+            class_dates = set().union(
+                *(attendance_dates.get(class_id, set()) for class_id in class_ids)
+            )
             streak: list[date] = []
             for target_date in sorted(class_dates):
                 if streak and target_date - streak[-1] != timedelta(days=1):
                     self._append_attendance_preference_issue(
-                        class_id,
+                        group_id,
+                        class_ids,
                         streak,
                         preferences,
                         issues,
@@ -756,22 +781,55 @@ class ValidateResultService:
                     streak = []
                 streak.append(target_date)
             self._append_attendance_preference_issue(
-                class_id,
+                group_id,
+                class_ids,
                 streak,
                 preferences,
                 issues,
             )
 
+    def _attendance_group_data(
+        self,
+        resolved_rules: ResolvedRuleSetModel,
+    ) -> tuple[
+        tuple[str, tuple[str, ...], dict[date, int | None], dict[date, int | None]],
+        ...,
+    ]:
+        if resolved_rules.attendance_groups:
+            return tuple(
+                (
+                    group.source_pair_rule_id or group.class_ids[0],
+                    group.class_ids,
+                    dict(group.attendance_streak_limits),
+                    dict(group.preferred_attendance_streak_limits),
+                )
+                for group in resolved_rules.attendance_groups
+            )
+
+        rules_by_class: dict[str, list[EffectiveClassDateRuleModel]] = defaultdict(list)
+        for rule in resolved_rules.class_date_rules:
+            rules_by_class[rule.class_id].append(rule)
+        return tuple(
+            (
+                class_id,
+                (class_id,),
+                {rule.target_date: rule.attendance_streak_limit for rule in class_rules},
+                {rule.target_date: rule.preferred_attendance_streak_limit for rule in class_rules},
+            )
+            for class_id, class_rules in sorted(rules_by_class.items())
+        )
+
     def _append_attendance_preference_issue(
         self,
-        class_id: str,
+        group_id: str,
+        class_ids: tuple[str, ...],
         streak: list[date],
-        preferences: dict[tuple[str, date], int | None],
+        preferences: dict[date, int | None],
         issues: list[ValidationIssueModel],
     ) -> None:
         if not streak:
             return
-        daily_preferences = [preferences.get((class_id, target_date)) for target_date in streak]
+        daily_preferences = [preferences.get(target_date) for target_date in streak]
         penalty = sum(
             max(0, streak_length - preferred_limit)
             for streak_length, preferred_limit in enumerate(daily_preferences, start=1)
@@ -784,9 +842,10 @@ class ValidateResultService:
             ValidationIssueModel(
                 "S18",
                 "WARNING",
-                f"{class_id}/{streak[0]}/{streak[-1]}",
+                f"{group_id}/{streak[0]}/{streak[-1]}",
                 (
                     "連続登校日数が推奨上限を超えています: "
+                    f"classes={'|'.join(class_ids)}, "
                     f"days={len(streak)}, preferred_limits={configured_limits}, "
                     f"penalty={penalty}"
                 ),

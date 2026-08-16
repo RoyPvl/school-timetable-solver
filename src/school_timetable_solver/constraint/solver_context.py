@@ -5,7 +5,10 @@ from datetime import date
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
+from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
+    TeacherDayOffRuleModel,
+)
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     ResolvedHomeroomBoundaryRuleModel,
@@ -37,9 +40,15 @@ class SolverContext:
     class_attendance_preference_limits: dict[tuple[str, date], int | None] = field(
         default_factory=dict
     )
+    attendance_group_class_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    attendance_group_limits: dict[tuple[str, date], int | None] = field(default_factory=dict)
+    attendance_group_preference_limits: dict[tuple[str, date], int | None] = field(
+        default_factory=dict
+    )
     lesson_count_rules: tuple[ResolvedLessonCountRuleModel, ...] = ()
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
     homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
+    class_pair_overlap_rules: tuple[ClassPairOverlapRuleModel, ...] = ()
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
     class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
@@ -67,3 +76,39 @@ class SolverContext:
     )
     teacher_home_campuses: dict[str, str] = field(default_factory=dict)
     fixed_teacher_leave_cell_counts: dict[tuple[str, date], int] = field(default_factory=dict)
+
+
+def ensure_attendance_group_day_variables(context: SolverContext) -> None:
+    group_class_ids = context.attendance_group_class_ids
+    if not group_class_ids:
+        class_ids = {class_id for class_id, _ in context.class_attendance_limits} | {
+            class_id for class_id, _ in context.class_attendance_preference_limits
+        }
+        group_class_ids = {class_id: (class_id,) for class_id in class_ids}
+
+    group_ids_by_class: dict[str, list[str]] = {}
+    for group_id, class_ids in group_class_ids.items():
+        for class_id in class_ids:
+            group_ids_by_class.setdefault(class_id, []).append(group_id)
+
+    variables_by_group_day: dict[tuple[str, date], list[cp_model.IntVar]] = {}
+    for candidate in context.candidates:
+        for group_id in group_ids_by_class.get(candidate.class_id, ()):
+            variables_by_group_day.setdefault((group_id, candidate.target_date), []).append(
+                context.assignment_variables[candidate.candidate_id]
+            )
+
+    for group_id in group_class_ids:
+        for target_date in context.calendar_dates:
+            key = (group_id, target_date)
+            if key in context.class_day_variables:
+                continue
+            day_variable = context.model.new_bool_var(
+                f"attendance_group_day__{group_id}__{target_date.isoformat()}"
+            )
+            context.class_day_variables[key] = day_variable
+            variables = variables_by_group_day.get(key, ())
+            if variables:
+                context.model.add_max_equality(day_variable, variables)
+            else:
+                context.model.add(day_variable == 0)

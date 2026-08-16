@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
     HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
@@ -139,6 +140,47 @@ def test_rule_resolver_allows_missing_hard_attendance_limit_and_resolves_prefere
     assert not resolved.issues
     assert all(rule.attendance_streak_limit is None for rule in resolved.class_date_rules)
     assert all(rule.preferred_attendance_streak_limit == 3 for rule in resolved.class_date_rules)
+
+
+def test_rule_resolver_builds_one_attendance_group_for_a_configured_pair(
+    minimal_input_data: InputDataModel,
+) -> None:
+    placement_rules = tuple(
+        replace(
+            rule,
+            attendance_streak_limit=(3 if rule.target_entity == "class" else None),
+            preferred_attendance_streak_limit=(2 if rule.target_entity == "class" else None),
+        )
+        for rule in minimal_input_data.placement_rules
+    )
+    input_data = replace(
+        minimal_input_data,
+        placement_rules=placement_rules,
+        class_pair_overlap_rules=(ClassPairOverlapRuleModel("PAIR1", "組1", True, "CL1", "CL2"),),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert not resolved.issues
+    assert len(resolved.attendance_groups) == 1
+    group = resolved.attendance_groups[0]
+    assert group.group_id == "PAIR::PAIR1"
+    assert group.class_ids == ("CL1", "CL2")
+    assert {limit for _, limit in group.attendance_streak_limits} == {3}
+    assert {limit for _, limit in group.preferred_attendance_streak_limits} == {2}
+
+
+def test_rule_resolver_rejects_mismatched_pair_attendance_limits(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        class_pair_overlap_rules=(ClassPairOverlapRuleModel("PAIR1", "組1", True, "CL1", "CL2"),),
+    )
+
+    resolved = RuleResolverService().execute(input_data)
+
+    assert any(issue.rule_id == "PAIR_ATTENDANCE_LIMIT_MISMATCH" for issue in resolved.issues)
 
 
 def test_rule_resolver_expands_homeroom_boundary_rule_to_matching_class_and_all_lessons(

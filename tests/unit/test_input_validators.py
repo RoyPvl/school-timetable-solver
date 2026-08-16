@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
     LessonCountRuleSegmentModel,
@@ -59,6 +60,47 @@ def test_validator_rejects_negative_room_priority(
     issues = ReferenceIntegrityValidator().validate(invalid)
 
     assert any(issue.rule_id == "INVALID_ROOM_PRIORITY" for issue in issues)
+
+
+def test_validator_rejects_invalid_and_duplicate_class_pair_overlap_rules(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        classes=(
+            minimal_input_data.classes[0],
+            replace(minimal_input_data.classes[1], campus_id="C1"),
+        ),
+        class_pair_overlap_rules=(
+            ClassPairOverlapRuleModel("PAIR1", "組1", True, "CL1", "CL2"),
+            ClassPairOverlapRuleModel("PAIR2", "組2", True, "CL2", "CL1"),
+            ClassPairOverlapRuleModel("PAIR3", "自己組", True, "CL1", "CL1"),
+            ClassPairOverlapRuleModel("PAIR4", "不明", True, "CL1", "UNKNOWN"),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert {
+        "DUPLICATE_CLASS_PAIR_OVERLAP_RULE",
+        "INVALID_CLASS_PAIR_OVERLAP_SELF_REFERENCE",
+        "UNKNOWN_REFERENCE",
+    } <= rule_ids
+
+
+def test_validator_rejects_class_pair_from_different_campuses(
+    minimal_input_data: InputDataModel,
+) -> None:
+    invalid = replace(
+        minimal_input_data,
+        class_pair_overlap_rules=(
+            ClassPairOverlapRuleModel("PAIR1", "校舎不一致", True, "CL1", "CL2"),
+        ),
+    )
+
+    rule_ids = {issue.rule_id for issue in ReferenceIntegrityValidator().validate(invalid)}
+
+    assert "CLASS_PAIR_CAMPUS_MISMATCH" in rule_ids
 
 
 def test_validator_detects_unknown_and_disabled_references(

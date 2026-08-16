@@ -6,7 +6,10 @@ from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.constraint.solver_context import SolverContext
+from school_timetable_solver.constraint.solver_context import (
+    SolverContext,
+    ensure_attendance_group_day_variables,
+)
 
 
 class RoomChangeGapPreferenceConstraint:
@@ -728,40 +731,22 @@ class ClassConsecutiveAttendancePreferenceConstraint:
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
-        variables_by_class_day: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
-        for candidate in context.candidates:
-            variables_by_class_day[(candidate.class_id, candidate.target_date)].append(
-                context.assignment_variables[candidate.candidate_id]
-            )
-
-        class_ids = {
-            class_id
-            for (class_id, _), limit in context.class_attendance_preference_limits.items()
-            if limit is not None
+        preference_limits = (
+            context.attendance_group_preference_limits
+            if context.attendance_group_class_ids
+            else context.class_attendance_preference_limits
+        )
+        group_ids = {
+            group_id for (group_id, _), limit in preference_limits.items() if limit is not None
         }
+        ensure_attendance_group_day_variables(context)
         penalty_groups = context.penalty_term_groups_by_priority.setdefault(
             self.priority,
             {},
         )
-        for class_id in class_ids:
-            for target_date in context.calendar_dates:
-                key = (class_id, target_date)
-                if key in context.class_day_variables:
-                    continue
-                day_variable = context.model.new_bool_var(
-                    f"class_day__{class_id}__{target_date.isoformat()}"
-                )
-                context.class_day_variables[key] = day_variable
-                variables = variables_by_class_day.get(key, ())
-                if variables:
-                    context.model.add_max_equality(day_variable, variables)
-                else:
-                    context.model.add(day_variable == 0)
-
+        for group_id in group_ids:
             for end_index, end_date in enumerate(context.calendar_dates):
-                preferred_limit = context.class_attendance_preference_limits.get(
-                    (class_id, end_date)
-                )
+                preferred_limit = preference_limits.get((group_id, end_date))
                 if preferred_limit is None:
                     continue
                 for streak_length in range(preferred_limit + 1, end_index + 2):
@@ -770,10 +755,10 @@ class ClassConsecutiveAttendancePreferenceConstraint:
                         continue
                     threshold_reached = context.model.new_bool_var(
                         "class_attendance_preference__"
-                        f"{class_id}__{end_date.isoformat()}__{streak_length}"
+                        f"{group_id}__{end_date.isoformat()}__{streak_length}"
                     )
                     day_variables = [
-                        context.class_day_variables[(class_id, target_date)]
+                        context.class_day_variables[(group_id, target_date)]
                         for target_date in window
                     ]
                     context.model.add_bool_and(day_variables).only_enforce_if(threshold_reached)
@@ -783,7 +768,7 @@ class ClassConsecutiveAttendancePreferenceConstraint:
                     context.penalty_terms_by_priority.setdefault(self.priority, []).append(
                         threshold_reached
                     )
-                    penalty_groups.setdefault((class_id,), []).append(threshold_reached)
+                    penalty_groups.setdefault((group_id,), []).append(threshold_reached)
         context.applied_rule_ids.append(self.rule_id)
 
 

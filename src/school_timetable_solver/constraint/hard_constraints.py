@@ -6,7 +6,10 @@ from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.constraint.solver_context import SolverContext
+from school_timetable_solver.constraint.solver_context import (
+    SolverContext,
+    ensure_attendance_group_day_variables,
+)
 
 
 class RequiredLessonCountConstraint:
@@ -231,6 +234,34 @@ class ClassOverlapConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class ClassPairOverlapConstraint:
+    """H22: prohibit simultaneous lessons for each configured class pair."""
+
+    rule_id = "H22"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_class_slot: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_class_slot[
+                (candidate.class_id, candidate.target_date, candidate.period_id)
+            ].append(context.assignment_variables[candidate.candidate_id])
+        slots = {(candidate.target_date, candidate.period_id) for candidate in context.candidates}
+        for rule in context.class_pair_overlap_rules:
+            if not rule.enabled:
+                continue
+            for target_date, period_id in slots:
+                variables = (
+                    variables_by_class_slot[(rule.first_class_id, target_date, period_id)]
+                    + variables_by_class_slot[(rule.second_class_id, target_date, period_id)]
+                )
+                if variables:
+                    context.model.add(sum(variables) <= 1)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class CampusRoomCapacityConstraint:
     """H03: keep concurrent campus lessons within assignable room capacity."""
 
@@ -429,26 +460,16 @@ class ConsecutiveAttendanceConstraint:
     rule_id = "H10"
 
     def apply(self, context: SolverContext) -> None:
-        groups: dict[tuple[str, date], list[cp_model.IntVar]] = defaultdict(list)
-        for candidate in context.candidates:
-            groups[(candidate.class_id, candidate.target_date)].append(
-                context.assignment_variables[candidate.candidate_id]
-            )
-        class_ids = {key[0] for key in context.class_attendance_limits}
-        for class_id in class_ids:
-            for target_date in context.calendar_dates:
-                key = (class_id, target_date)
-                day_variable = context.model.new_bool_var(
-                    f"class_day__{class_id}__{target_date.isoformat()}"
-                )
-                context.class_day_variables[key] = day_variable
-                variables = groups.get(key, ())
-                if variables:
-                    context.model.add_max_equality(day_variable, variables)
-                else:
-                    context.model.add(day_variable == 0)
+        limits = (
+            context.attendance_group_limits
+            if context.attendance_group_class_ids
+            else context.class_attendance_limits
+        )
+        ensure_attendance_group_day_variables(context)
+        group_ids = {key[0] for key in limits}
+        for group_id in group_ids:
             for end_index, end_date in enumerate(context.calendar_dates):
-                limit = context.class_attendance_limits[(class_id, end_date)]
+                limit = limits[(group_id, end_date)]
                 if limit is None:
                     continue
                 window = context.calendar_dates[max(0, end_index - limit) : end_index + 1]
@@ -457,7 +478,7 @@ class ConsecutiveAttendanceConstraint:
                 if any(right - left != timedelta(days=1) for left, right in pairwise(window)):
                     continue
                 context.model.add(
-                    sum(context.class_day_variables[(class_id, day)] for day in window) <= limit
+                    sum(context.class_day_variables[(group_id, day)] for day in window) <= limit
                 )
         context.applied_rule_ids.append(self.rule_id)
 
@@ -745,6 +766,7 @@ DEFAULT_HARD_CONSTRAINTS = (
     ClassRequiredLessonSlotConstraint(),
     TeacherOverlapConstraint(),
     ClassOverlapConstraint(),
+    ClassPairOverlapConstraint(),
     CampusRoomCapacityConstraint(),
     ClassRoomContinuityConstraint(),
     ClassLongInternalGapConstraint(),
@@ -764,6 +786,7 @@ HardConstraint = (
     | ClassRequiredLessonSlotConstraint
     | TeacherOverlapConstraint
     | ClassOverlapConstraint
+    | ClassPairOverlapConstraint
     | CampusRoomCapacityConstraint
     | ClassRoomContinuityConstraint
     | ClassLongInternalGapConstraint

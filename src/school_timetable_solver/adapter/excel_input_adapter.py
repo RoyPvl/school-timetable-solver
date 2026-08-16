@@ -10,6 +10,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from school_timetable_solver.model.input_models import (
     CalendarDayModel,
+    ClassPairOverlapRuleModel,
     HomeroomBoundaryRuleModel,
     InputDataModel,
     InputWorkbookSettingsModel,
@@ -35,7 +36,7 @@ from school_timetable_solver.model.result_models import (
 
 
 class ExcelInputReaderAdapter:
-    """Read input-contract v1.0 workbooks into Excel-independent models."""
+    """Read input-contract v1.1 workbooks into Excel-independent models."""
 
     _required_headers: ClassVar[dict[str, tuple[str, ...]]] = {
         "01_基本設定": ("setting_key", "setting_value", "description"),
@@ -169,6 +170,14 @@ class ExcelInputReaderAdapter:
             "end_date",
             "note",
         ),
+        "17_クラス組重複禁止ルール": (
+            "rule_id",
+            "rule_name",
+            "enabled",
+            "first_class_id",
+            "second_class_id",
+            "note",
+        ),
     }
     _required_sheets: ClassVar[tuple[str, ...]] = (
         "00_操作説明",
@@ -245,6 +254,10 @@ class ExcelInputReaderAdapter:
             rows_by_sheet["16_担任授業期間ルール"],
             issues,
         )
+        class_pair_overlap_rules = self._read_class_pair_overlap_rules(
+            rows_by_sheet["17_クラス組重複禁止ルール"],
+            issues,
+        )
         if settings is None or self._has_errors(issues):
             return InputReadResultModel(None, tuple(issues))
         return InputReadResultModel(
@@ -264,6 +277,7 @@ class ExcelInputReaderAdapter:
                 lesson_count_preference_rule_segments=tuple(lesson_count_preference_rule_segments),
                 teacher_day_off_rules=tuple(teacher_day_off_rules),
                 homeroom_boundary_rules=tuple(homeroom_boundary_rules),
+                class_pair_overlap_rules=tuple(class_pair_overlap_rules),
             ),
             tuple(issues),
         )
@@ -362,7 +376,7 @@ class ExcelInputReaderAdapter:
         description = (
             self._optional_text(values["description"][1]) if "description" in values else None
         )
-        if schema_version is not None and schema_version != "1.0":
+        if schema_version is not None and schema_version != "1.1":
             issues.append(
                 self._issue(
                     "UNSUPPORTED_SCHEMA_VERSION",
@@ -1174,6 +1188,52 @@ class ExcelInputReaderAdapter:
                         issues,
                     ),
                     required_lesson_period_ids=self._pipe(row["required_lesson_periods"]),
+                )
+            )
+        return result
+
+    def _read_class_pair_overlap_rules(
+        self,
+        rows: list[tuple[int, dict[str, object]]],
+        issues: list[ValidationIssueModel],
+    ) -> list[ClassPairOverlapRuleModel]:
+        sheet_name = "17_クラス組重複禁止ルール"
+        result: list[ClassPairOverlapRuleModel] = []
+        for row_number, row in rows:
+            required = (
+                self._text(row["rule_id"], sheet_name, row_number, "rule_id", issues),
+                self._text(row["rule_name"], sheet_name, row_number, "rule_name", issues),
+                self._boolean(row["enabled"], sheet_name, row_number, "enabled", issues),
+                self._text(
+                    row["first_class_id"],
+                    sheet_name,
+                    row_number,
+                    "first_class_id",
+                    issues,
+                ),
+                self._text(
+                    row["second_class_id"],
+                    sheet_name,
+                    row_number,
+                    "second_class_id",
+                    issues,
+                ),
+            )
+            if None in required:
+                continue
+            rule_id, rule_name, enabled, first_class_id, second_class_id = required
+            assert isinstance(rule_id, str)
+            assert isinstance(rule_name, str)
+            assert isinstance(enabled, bool)
+            assert isinstance(first_class_id, str)
+            assert isinstance(second_class_id, str)
+            result.append(
+                ClassPairOverlapRuleModel(
+                    rule_id=rule_id,
+                    rule_name=rule_name,
+                    enabled=enabled,
+                    first_class_id=first_class_id,
+                    second_class_id=second_class_id,
                 )
             )
         return result

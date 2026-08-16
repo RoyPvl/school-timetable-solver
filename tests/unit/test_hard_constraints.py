@@ -10,6 +10,7 @@ from school_timetable_solver.constraint.hard_constraints import (
     CampusRoomCapacityConstraint,
     ClassLongInternalGapConstraint,
     ClassOverlapConstraint,
+    ClassPairOverlapConstraint,
     ClassRequiredLessonSlotConstraint,
     ClassRoomContinuityConstraint,
     ConsecutiveAttendanceConstraint,
@@ -24,7 +25,10 @@ from school_timetable_solver.constraint.hard_constraints import (
     TeacherSingleCampusPerDayConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
-from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
+from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
+    TeacherDayOffRuleModel,
+)
 from school_timetable_solver.model.solver_models import (
     CandidateSlotModel,
     ResolvedHomeroomBoundaryRuleModel,
@@ -519,6 +523,36 @@ def test_class_overlap_constraint_rejects_same_class_slot() -> None:
     assert _force_all_and_solve(context) == "INFEASIBLE"
 
 
+def test_h22_class_pair_overlap_constraint_rejects_configured_pair_in_same_slot() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
+        _candidate("Q2__1", "T2", DAY_ONE, "C1", "P1", "CL2"),
+    )
+    context = _context(candidates)
+    context.class_pair_overlap_rules = (
+        ClassPairOverlapRuleModel("PAIR1", "重複禁止", True, "CL1", "CL2"),
+    )
+
+    ClassPairOverlapConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h22_class_pair_overlap_constraint_allows_configured_pair_in_different_slots() -> None:
+    candidates = (
+        _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
+        _candidate("Q2__1", "T2", DAY_ONE, "C1", "P2", "CL2"),
+    )
+    context = _context(candidates)
+    context.class_pair_overlap_rules = (
+        ClassPairOverlapRuleModel("PAIR1", "重複禁止", True, "CL1", "CL2"),
+    )
+
+    ClassPairOverlapConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "OPTIMAL"
+
+
 def test_h03_campus_room_capacity_rejects_more_lessons_than_rooms() -> None:
     candidates = (
         _candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "CL1"),
@@ -735,6 +769,50 @@ def test_h10_rejects_four_consecutive_attendance_days_when_limit_is_three() -> N
     ConsecutiveAttendanceConstraint().apply(context)
 
     assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h10_counts_alternating_pair_members_as_one_attendance_group() -> None:
+    dates = tuple(date(2026, 7, 27 + offset) for offset in range(4))
+    candidates = tuple(
+        _candidate(
+            f"Q{offset}__1",
+            f"T{offset}",
+            target_date,
+            "C1",
+            "P1",
+            "CL1" if offset % 2 else "CL2",
+        )
+        for offset, target_date in enumerate(dates, start=1)
+    )
+    context = _context(candidates)
+    context.calendar_dates = dates
+    context.attendance_group_class_ids = {"PAIR::PAIR1": ("CL1", "CL2")}
+    context.attendance_group_limits = {("PAIR::PAIR1", target_date): 3 for target_date in dates}
+    ConsecutiveAttendanceConstraint().apply(context)
+
+    assert _force_all_and_solve(context) == "INFEASIBLE"
+
+
+def test_h10_shared_class_contributes_to_each_configured_pair_group() -> None:
+    candidates = (_candidate("Q1__1", "T1", DAY_ONE, "C1", "P1", "SPECIAL"),)
+    context = _context(candidates)
+    context.calendar_dates = (DAY_ONE,)
+    context.attendance_group_class_ids = {
+        "PAIR::A": ("CL1", "SPECIAL"),
+        "PAIR::B": ("CL2", "SPECIAL"),
+    }
+    context.attendance_group_limits = {
+        ("PAIR::A", DAY_ONE): None,
+        ("PAIR::B", DAY_ONE): None,
+    }
+    ConsecutiveAttendanceConstraint().apply(context)
+    for variable in context.assignment_variables.values():
+        context.model.add(variable == 1)
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert solver.value(context.class_day_variables[("PAIR::A", DAY_ONE)]) == 1
+    assert solver.value(context.class_day_variables[("PAIR::B", DAY_ONE)]) == 1
 
 
 def test_h10_allows_exam_class_without_a_hard_attendance_limit() -> None:

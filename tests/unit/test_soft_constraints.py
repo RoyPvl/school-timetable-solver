@@ -652,6 +652,66 @@ def test_s18_calendar_gap_breaks_the_attendance_streak() -> None:
     assert solver.objective_value == 0
 
 
+def test_s18_penalizes_each_overlapping_pair_as_an_independent_group() -> None:
+    dates = tuple(TARGET_DATE + timedelta(days=offset) for offset in range(3))
+    candidates = tuple(
+        CandidateSlotModel(
+            f"Q{offset}__P1",
+            f"Q{offset}",
+            target_date,
+            "P1",
+            f"T{offset}",
+            "C1",
+            class_id,
+            "S1",
+        )
+        for offset, (target_date, class_id) in enumerate(
+            zip(dates, ("CL1", "SPECIAL", "CL1"), strict=True),
+            start=1,
+        )
+    )
+    model = cp_model.CpModel()
+    context = SolverContext(
+        model=model,
+        candidates=candidates,
+        assignment_variables={
+            candidate.candidate_id: model.new_bool_var(candidate.candidate_id)
+            for candidate in candidates
+        },
+        required_counts={candidate.requirement_id: 1 for candidate in candidates},
+        room_capacities={"C1": 1},
+        class_daily_limits={},
+        requirement_daily_limits={},
+        teacher_daily_limits={},
+        teacher_first_last_period_forbidden={},
+        class_attendance_limits={},
+        period_orders={"P1": 1},
+        calendar_dates=dates,
+        attendance_group_class_ids={
+            "PAIR::A": ("CL1", "SPECIAL"),
+            "PAIR::B": ("CL2", "SPECIAL"),
+        },
+        attendance_group_preference_limits={
+            (group_id, target_date): 2
+            for group_id in ("PAIR::A", "PAIR::B")
+            for target_date in dates
+        },
+    )
+    constraint = ClassConsecutiveAttendancePreferenceConstraint()
+    constraint.apply(context)
+    for variable in context.assignment_variables.values():
+        model.add(variable == 1)
+    model.minimize(sum(context.penalty_terms_by_priority[constraint.priority]))
+    solver = cp_model.CpSolver()
+
+    assert solver.status_name(solver.solve(model)) == "OPTIMAL"
+    assert solver.objective_value == 1
+    assert set(context.penalty_term_groups_by_priority[constraint.priority]) == {
+        ("PAIR::A",),
+        ("PAIR::B",),
+    }
+
+
 def test_s21_prefers_three_early_and_one_late_day_off() -> None:
     context = _context(room_capacity=1)
     early_dates = tuple(TARGET_DATE + timedelta(days=offset) for offset in range(3))

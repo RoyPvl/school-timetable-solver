@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
     HomeroomBoundaryRuleModel,
     InputDataModel,
     LessonCountPreferenceRuleSegmentModel,
@@ -20,6 +21,7 @@ from school_timetable_solver.model.result_models import (
     ScheduledLessonModel,
     ScheduledTeacherDayOffModel,
 )
+from school_timetable_solver.model.solver_models import ResolvedAttendanceGroupModel
 from school_timetable_solver.service.planning_services import (
     CandidateBuilderService,
     RuleResolverService,
@@ -328,6 +330,35 @@ def test_result_validator_reports_required_count_and_overlaps(
     )
 
     assert {"H01", "H02", "H03", "H06"} <= {issue.rule_id for issue in report.issues}
+
+
+def test_result_validator_reports_h22_configured_class_pair_overlap(
+    minimal_input_data: InputDataModel,
+) -> None:
+    input_data = replace(
+        minimal_input_data,
+        class_pair_overlap_rules=(
+            ClassPairOverlapRuleModel("PAIR1", "重複禁止", True, "CL1", "CL2"),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    lessons = (
+        _lesson(),
+        _lesson(
+            requirement_id="Q2",
+            teacher_id="T2",
+            room_id="R3",
+            campus_id="C2",
+            class_id="CL2",
+            subject_id="S2",
+        ),
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    assert any(
+        issue.rule_id == "H22" and issue.target.startswith("PAIR1/") for issue in report.issues
+    )
 
 
 def test_result_validator_reports_lesson_count_in_scope(
@@ -703,7 +734,7 @@ def test_result_validator_reports_s18_triangular_attendance_penalty(
         )
         for target_date in dates
     )
-    resolved = replace(resolved, class_date_rules=class_rules)
+    resolved = replace(resolved, class_date_rules=class_rules, attendance_groups=())
     lessons = tuple(
         _lesson(
             requirement_id=f"Q{index}",
@@ -719,6 +750,51 @@ def test_result_validator_reports_s18_triangular_attendance_penalty(
     assert len(s18_issues) == 1
     assert s18_issues[0].severity == "WARNING"
     assert "days=5" in s18_issues[0].message
+    assert "penalty=3" in s18_issues[0].message
+
+
+def test_result_validator_applies_h10_and_s18_to_combined_pair_attendance(
+    minimal_input_data: InputDataModel,
+) -> None:
+    dates = tuple(date(2026, 7, 27) + timedelta(days=offset) for offset in range(4))
+    input_data = replace(
+        minimal_input_data,
+        calendar_days=tuple(
+            replace(minimal_input_data.calendar_days[0], target_date=target_date)
+            for target_date in dates
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
+    resolved = replace(
+        resolved,
+        attendance_groups=(
+            ResolvedAttendanceGroupModel(
+                group_id="PAIR::PAIR1",
+                source_pair_rule_id="PAIR1",
+                class_ids=("CL1", "CL2"),
+                attendance_streak_limits=tuple((target_date, 3) for target_date in dates),
+                preferred_attendance_streak_limits=tuple((target_date, 2) for target_date in dates),
+            ),
+        ),
+    )
+    lessons = tuple(
+        _lesson(
+            requirement_id=f"Q{index}",
+            target_date=target_date,
+            teacher_id=f"T{index}",
+            class_id="CL1" if index % 2 else "CL2",
+        )
+        for index, target_date in enumerate(dates, start=1)
+    )
+
+    report = ValidateResultService().execute(input_data, resolved, lessons)
+
+    h10_issues = [issue for issue in report.issues if issue.rule_id == "H10"]
+    s18_issues = [issue for issue in report.issues if issue.rule_id == "S18"]
+    assert len(h10_issues) == 1
+    assert h10_issues[0].target.startswith("PAIR1/")
+    assert len(s18_issues) == 1
+    assert s18_issues[0].target.startswith("PAIR1/")
     assert "penalty=3" in s18_issues[0].message
 
 
