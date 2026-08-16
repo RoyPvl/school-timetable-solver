@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from school_timetable_solver.composition import SOFT_CONSTRAINT_PRIORITY_POLICY
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
 from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 
@@ -132,3 +133,24 @@ def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
         "S22",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)
+
+
+def test_soft_constraint_priority_policy_matches_operational_order() -> None:
+    assert SOFT_CONSTRAINT_PRIORITY_POLICY == {
+        "S12": 100,
+        "S11": 90,
+        "S13": 80,
+        "S14": 80,
+        "S15": 70,
+        "S18": 60,
+        "S17": 40,
+        "S21": 30,
+        "S22": 30,
+        "S16": 20,
+        "S19": 10,
+        "S20": 10,
+        "S10": 5,
+    }
+    assert set(SOFT_CONSTRAINT_PRIORITY_POLICY) == {
+        constraint.rule_id for constraint in DEFAULT_SOFT_CONSTRAINTS
+    }
