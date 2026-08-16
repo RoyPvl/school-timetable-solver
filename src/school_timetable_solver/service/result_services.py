@@ -81,7 +81,7 @@ class AssignRoomsService:
 
 
 class ValidateResultService:
-    """Independently verify all input/output-contract v0.1 hard rules."""
+    """Independently verify all input/output-contract hard rules."""
 
     def execute(
         self,
@@ -98,6 +98,7 @@ class ValidateResultService:
         self._validate_required_lesson_slots(resolved_rules, lessons, issues)
         self._validate_overlaps(lessons, issues)
         self._validate_class_pair_overlaps(input_data, lessons, issues)
+        self._validate_class_successors(input_data, lessons, issues)
         self._validate_candidate_facts(input_data, resolved_rules, lessons, issues)
         self._validate_daily_limits(input_data, resolved_rules, lessons, issues)
         self._validate_first_last_periods(input_data, resolved_rules, lessons, issues)
@@ -131,7 +132,7 @@ class ValidateResultService:
             lessons,
             issues,
         )
-        self._report_class_single_lesson_day_preference(lessons, issues)
+        self._report_class_single_lesson_day_preference(input_data, lessons, issues)
         self._report_class_subject_consecutive_repeat_preference(
             input_data,
             lessons,
@@ -460,6 +461,56 @@ class ValidateResultService:
                         (
                             "重複禁止クラス組が同一時限に配置されています: "
                             f"{rule.first_class_id}/{rule.second_class_id}"
+                        ),
+                    )
+                )
+
+    def _validate_class_successors(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        first_classes_by_second: dict[str, set[str]] = defaultdict(set)
+        for rule in input_data.class_pair_overlap_rules:
+            if rule.enabled:
+                first_classes_by_second[rule.second_class_id].add(rule.first_class_id)
+        if not first_classes_by_second:
+            return
+        period_orders = {period.period_id: period.output_order for period in input_data.periods}
+        lessons_by_class_day: dict[tuple[str, date], list[ScheduledLessonModel]] = defaultdict(list)
+        for lesson in lessons:
+            lessons_by_class_day[(lesson.class_id, lesson.target_date)].append(lesson)
+
+        second_days = sorted(
+            (class_id, target_date)
+            for class_id, target_date in lessons_by_class_day
+            if class_id in first_classes_by_second
+        )
+        for second_class_id, target_date in second_days:
+            second_lessons = lessons_by_class_day[(second_class_id, target_date)]
+            earliest_second = min(second_lessons, key=lambda item: period_orders[item.period_id])
+            earliest_order = period_orders[earliest_second.period_id]
+            valid_first = False
+            for first_class_id in sorted(first_classes_by_second[second_class_id]):
+                first_lessons = lessons_by_class_day.get((first_class_id, target_date), ())
+                if not first_lessons:
+                    continue
+                latest_first = max(first_lessons, key=lambda item: period_orders[item.period_id])
+                if period_orders[latest_first.period_id] + 1 != earliest_order:
+                    continue
+                if latest_first.room_id != earliest_second.room_id:
+                    continue
+                valid_first = True
+                break
+            if not valid_first:
+                issues.append(
+                    self._issue(
+                        "H23",
+                        f"{second_class_id}/{target_date}",
+                        (
+                            "second classの最初のコマが、同一教室での"
+                            "first class最終コマ直後になっていません"
                         ),
                     )
                 )
@@ -997,6 +1048,11 @@ class ValidateResultService:
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
+        excluded_transitions = {
+            (rule.first_class_id, rule.second_class_id)
+            for rule in input_data.class_pair_overlap_rules
+            if rule.enabled
+        }
         ordered_periods = tuple(sorted(input_data.periods, key=lambda item: item.output_order))
         classes_by_room_day_period = {
             (lesson.room_id, lesson.target_date, lesson.period_id): lesson.class_id
@@ -1015,6 +1071,7 @@ class ValidateResultService:
                     left_class_id is not None
                     and right_class_id is not None
                     and left_class_id != right_class_id
+                    and (left_class_id, right_class_id) not in excluded_transitions
                 ):
                     issues.append(
                         ValidationIssueModel(
@@ -1107,20 +1164,25 @@ class ValidateResultService:
 
     def _report_class_single_lesson_day_preference(
         self,
+        input_data: InputDataModel,
         lessons: tuple[ScheduledLessonModel, ...],
         issues: list[ValidationIssueModel],
     ) -> None:
+        second_class_ids = {
+            rule.second_class_id for rule in input_data.class_pair_overlap_rules if rule.enabled
+        }
         lesson_counts = Counter((lesson.class_id, lesson.target_date) for lesson in lessons)
         for key, lesson_count in lesson_counts.items():
-            if lesson_count == 1:
-                issues.append(
-                    ValidationIssueModel(
-                        "S12",
-                        "WARNING",
-                        str(key),
-                        "同一クラスの授業がこの日に1コマだけ配置されています",
-                    )
+            if key[0] in second_class_ids or lesson_count != 1:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S12",
+                    "WARNING",
+                    str(key),
+                    "同一クラスの授業がこの日に1コマだけ配置されています",
                 )
+            )
 
     def _report_class_subject_consecutive_repeat_preference(
         self,
