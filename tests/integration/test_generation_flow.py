@@ -78,7 +78,7 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert len(lessons) == 4
-    assert {issue.rule_id for issue in report.issues} == {"S12"}
+    assert not report.issues
     assert len(document.dates) == 3
 
 

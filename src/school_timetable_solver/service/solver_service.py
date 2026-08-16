@@ -471,6 +471,15 @@ class TimetableSolverService:
             if teacher.enabled
         }
         fixed_teacher_leave_cell_counts: Counter[tuple[str, date]] = Counter()
+        subjects_by_class: dict[str, set[str]] = {}
+        for requirement in input_data.lesson_requirements:
+            if requirement.enabled:
+                subjects_by_class.setdefault(requirement.class_id, set()).add(
+                    requirement.subject_id
+                )
+        single_subject_class_ids = frozenset(
+            class_id for class_id, subject_ids in subjects_by_class.items() if len(subject_ids) == 1
+        )
         for leave in input_data.teacher_leaves:
             campus_id = teacher_home_campuses[leave.teacher_id]
             required_cells = 1 if set(leave.unavailable_period_ids) == period_ids else 2
@@ -484,6 +493,7 @@ class TimetableSolverService:
                 for requirement in input_data.lesson_requirements
                 if requirement.enabled
             },
+            single_subject_class_ids=single_subject_class_ids,
             room_capacities=dict(
                 Counter(
                     room.campus_id

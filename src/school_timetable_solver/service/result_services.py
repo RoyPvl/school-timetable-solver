@@ -1171,9 +1171,17 @@ class ValidateResultService:
         second_class_ids = {
             rule.second_class_id for rule in input_data.class_pair_overlap_rules if rule.enabled
         }
+        subjects_by_class: dict[str, set[str]] = defaultdict(set)
+        for requirement in input_data.lesson_requirements:
+            if requirement.enabled:
+                subjects_by_class[requirement.class_id].add(requirement.subject_id)
+        single_subject_class_ids = {
+            class_id for class_id, subject_ids in subjects_by_class.items() if len(subject_ids) == 1
+        }
+        excluded_class_ids = second_class_ids | single_subject_class_ids
         lesson_counts = Counter((lesson.class_id, lesson.target_date) for lesson in lessons)
         for key, lesson_count in lesson_counts.items():
-            if key[0] in second_class_ids or lesson_count != 1:
+            if key[0] in excluded_class_ids or lesson_count != 1:
                 continue
             issues.append(
                 ValidationIssueModel(

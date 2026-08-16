@@ -288,6 +288,17 @@ def test_s12_penalizes_only_class_days_with_exactly_one_lesson() -> None:
     assert objectives == [0, 1, 0]
 
 
+def test_s12_excludes_single_subject_class() -> None:
+    context = _context(room_capacity=1)
+    ClassRoomContinuityConstraint().apply(context)
+    context.single_subject_class_ids = frozenset({"CL1", "CL2"})
+
+    constraint = ClassSingleLessonDayPreferenceConstraint()
+    constraint.apply(context)
+
+    assert not context.penalty_terms_by_priority.get(constraint.priority)
+
+
 def test_s13_counts_each_adjacent_same_subject_pair() -> None:
     objectives = []
     for selected_period_ids in (

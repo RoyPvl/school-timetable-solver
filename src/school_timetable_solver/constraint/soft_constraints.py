@@ -780,7 +780,7 @@ class ClassConsecutiveAttendancePreferenceConstraint:
 
 
 class ClassSingleLessonDayPreferenceConstraint:
-    """S12: minimize class days containing exactly one lesson, except H23 second classes."""
+    """S12: minimize one-lesson class days, excluding H23 second and single-subject classes."""
 
     rule_id = "S12"
     priority = 15
@@ -797,8 +797,9 @@ class ClassSingleLessonDayPreferenceConstraint:
                 key=lambda item: item[1],
             )
         )
+        excluded_class_ids = second_class_ids | context.single_subject_class_ids
         for campus_id, target_date, class_id in context.class_room_variables:
-            if class_id in second_class_ids:
+            if class_id in excluded_class_ids:
                 continue
             slots = []
             for period_id in ordered_period_ids:

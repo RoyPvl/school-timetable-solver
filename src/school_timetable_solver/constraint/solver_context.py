@@ -49,6 +49,7 @@ class SolverContext:
     lesson_count_preference_rules: tuple[ResolvedLessonCountPreferenceRuleModel, ...] = ()
     homeroom_boundary_rules: tuple[ResolvedHomeroomBoundaryRuleModel, ...] = ()
     class_pair_overlap_rules: tuple[ClassPairOverlapRuleModel, ...] = ()
+    single_subject_class_ids: frozenset[str] = frozenset()
     applied_rule_ids: list[str] = field(default_factory=list)
     class_day_variables: dict[tuple[str, date], cp_model.IntVar] = field(default_factory=dict)
     class_room_variables: dict[tuple[str, date, str], cp_model.IntVar] = field(default_factory=dict)
