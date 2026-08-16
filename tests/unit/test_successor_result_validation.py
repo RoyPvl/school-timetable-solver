@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
+from typing import cast
 
-from school_timetable_solver.model.input_models import ClassPairOverlapRuleModel
-from school_timetable_solver.model.result_models import ScheduledLessonModel
+from school_timetable_solver.model.input_models import (
+    ClassPairOverlapRuleModel,
+    InputDataModel,
+)
+from school_timetable_solver.model.result_models import (
+    ScheduledLessonModel,
+    ValidationIssueModel,
+)
 from school_timetable_solver.service.result_services import ValidateResultService
 
 DAY = date(2026, 7, 27)
@@ -23,15 +30,18 @@ def _lesson(class_id: str, period_id: str, room_id: str = "R1") -> ScheduledLess
     )
 
 
-def _input_data(pairs: tuple[tuple[str, str], ...]) -> SimpleNamespace:
-    return SimpleNamespace(
-        periods=tuple(
-            SimpleNamespace(period_id=f"P{index}", output_order=index)
-            for index in range(1, 7)
-        ),
-        class_pair_overlap_rules=tuple(
-            ClassPairOverlapRuleModel(f"PAIR_{index}", "pair", True, first, second)
-            for index, (first, second) in enumerate(pairs, start=1)
+def _input_data(pairs: tuple[tuple[str, str], ...]) -> InputDataModel:
+    return cast(
+        InputDataModel,
+        SimpleNamespace(
+            periods=tuple(
+                SimpleNamespace(period_id=f"P{index}", output_order=index)
+                for index in range(1, 7)
+            ),
+            class_pair_overlap_rules=tuple(
+                ClassPairOverlapRuleModel(f"PAIR_{index}", "pair", True, first, second)
+                for index, (first, second) in enumerate(pairs, start=1)
+            ),
         ),
     )
 
@@ -42,7 +52,7 @@ def test_result_h23_accepts_any_configured_first_predecessor() -> None:
         _lesson("FB", "P3", "R1"),
         _lesson("S", "P4", "R1"),
     )
-    issues = []
+    issues: list[ValidationIssueModel] = []
 
     ValidateResultService()._validate_class_successors(
         _input_data((("FA", "S"), ("FB", "S"))),
@@ -54,7 +64,7 @@ def test_result_h23_accepts_any_configured_first_predecessor() -> None:
 
 
 def test_result_h23_rejects_second_only_day() -> None:
-    issues = []
+    issues: list[ValidationIssueModel] = []
 
     ValidateResultService()._validate_class_successors(
         _input_data((("F", "S"),)),
@@ -66,7 +76,7 @@ def test_result_h23_rejects_second_only_day() -> None:
 
 
 def test_result_h23_rejects_wrong_room() -> None:
-    issues = []
+    issues: list[ValidationIssueModel] = []
 
     ValidateResultService()._validate_class_successors(
         _input_data((("F", "S"),)),
@@ -78,7 +88,7 @@ def test_result_h23_rejects_wrong_room() -> None:
 
 
 def test_result_h23_uses_latest_first_and_earliest_second() -> None:
-    issues = []
+    issues: list[ValidationIssueModel] = []
 
     ValidateResultService()._validate_class_successors(
         _input_data((("F", "S"),)),
