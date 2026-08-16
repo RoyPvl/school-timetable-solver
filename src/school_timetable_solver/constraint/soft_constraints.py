@@ -20,6 +20,11 @@ class RoomChangeGapPreferenceConstraint:
     optimization_scope = "room"
 
     def apply(self, context: SolverContext) -> None:
+        excluded_transitions = {
+            (rule.first_class_id, rule.second_class_id)
+            for rule in context.class_pair_overlap_rules
+            if rule.enabled
+        }
         ordered_period_ids = tuple(
             period_id
             for period_id, _ in sorted(
@@ -46,6 +51,8 @@ class RoomChangeGapPreferenceConstraint:
                         (left_class_id, right_class_id),
                         (right_class_id, left_class_id),
                     ):
+                        if (first_class_id, second_class_id) in excluded_transitions:
+                            continue
                         first_slot = context.class_slot_variables.get(
                             (
                                 campus_id,
@@ -773,13 +780,16 @@ class ClassConsecutiveAttendancePreferenceConstraint:
 
 
 class ClassSingleLessonDayPreferenceConstraint:
-    """S12: minimize class days containing exactly one lesson."""
+    """S12: minimize class days containing exactly one lesson, except H23 second classes."""
 
     rule_id = "S12"
     priority = 15
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
+        second_class_ids = {
+            rule.second_class_id for rule in context.class_pair_overlap_rules if rule.enabled
+        }
         ordered_period_ids = tuple(
             period_id
             for period_id, _ in sorted(
@@ -788,6 +798,8 @@ class ClassSingleLessonDayPreferenceConstraint:
             )
         )
         for campus_id, target_date, class_id in context.class_room_variables:
+            if class_id in second_class_ids:
+                continue
             slots = []
             for period_id in ordered_period_ids:
                 slot = context.class_slot_variables.get(
