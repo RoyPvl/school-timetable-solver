@@ -526,7 +526,7 @@ def test_result_validator_allows_room_reuse_after_one_empty_period(
     report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
 
     assert not [issue for issue in report.issues if issue.rule_id in {"H15", "S10", "S11"}]
-    assert len([issue for issue in report.issues if issue.rule_id == "S12"]) == 2
+    assert not [issue for issue in report.issues if issue.rule_id == "S12"]
 
 
 def test_result_validator_reports_s19_room_priority_penalty(
@@ -547,7 +547,14 @@ def test_result_validator_reports_s19_room_priority_penalty(
 def test_result_validator_warns_only_for_exactly_one_lesson_class_days(
     minimal_input_data: InputDataModel,
 ) -> None:
-    resolved = RuleResolverService().execute(minimal_input_data)
+    input_data = replace(
+        minimal_input_data,
+        lesson_requirements=(
+            *minimal_input_data.lesson_requirements,
+            LessonRequirementModel("Q3", "CL2", "S1", "T2", 1, 1, True),
+        ),
+    )
+    resolved = RuleResolverService().execute(input_data)
     lessons = (
         _lesson(requirement_id="Q1", period_id="P1", class_id="CL1"),
         _lesson(requirement_id="Q2", period_id="P2", class_id="CL1"),
@@ -561,12 +568,23 @@ def test_result_validator_warns_only_for_exactly_one_lesson_class_days(
         ),
     )
 
-    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+    report = ValidateResultService().execute(input_data, resolved, lessons)
     s12_issues = [issue for issue in report.issues if issue.rule_id == "S12"]
 
     assert len(s12_issues) == 1
     assert "CL2" in s12_issues[0].target
     assert s12_issues[0].severity == "WARNING"
+
+
+def test_result_validator_does_not_warn_s12_for_single_subject_class(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    lessons = (_lesson(requirement_id="Q1", class_id="CL1", subject_id="S1"),)
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+
+    assert not [issue for issue in report.issues if issue.rule_id == "S12"]
 
 
 def test_result_validator_warns_for_each_adjacent_same_subject_pair(
