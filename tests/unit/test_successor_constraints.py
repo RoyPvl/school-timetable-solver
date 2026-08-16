@@ -4,12 +4,18 @@ from datetime import date
 
 from ortools.sat.python import cp_model
 
-from school_timetable_solver.constraint.hard_constraints import ClassRoomContinuityConstraint
-from school_timetable_solver.constraint.solver_context import SolverContext
-from school_timetable_solver.constraint.successor_constraints import (
+from school_timetable_solver.constraint.hard_constraints import (
+    DAY_LEVEL_MASTER_CONSTRAINTS,
+    DEFAULT_HARD_CONSTRAINTS,
+    ClassRoomContinuityConstraint,
     ClassSuccessorConstraint,
     ClassSuccessorDayConstraint,
 )
+from school_timetable_solver.constraint.soft_constraints import (
+    ClassSingleLessonDayPreferenceConstraint,
+    RoomChangeGapPreferenceConstraint,
+)
+from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import ClassPairOverlapRuleModel
 from school_timetable_solver.model.solver_models import CandidateSlotModel
 
@@ -136,6 +142,19 @@ def test_h23_aggregates_multiple_first_classes_as_or() -> None:
     assert status in {"OPTIMAL", "FEASIBLE"}
 
 
+def test_h23_requires_same_room_for_selected_first_and_second() -> None:
+    candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
+    context = _apply_period_h23(candidates, (("F", "S"),))
+    context.model.add(
+        context.class_room_variables[("C1", DAY, "F")]
+        != context.class_room_variables[("C1", DAY, "S")]
+    )
+
+    status = _solve(context, {("F", "P2"), ("S", "P3")})
+
+    assert status == "INFEASIBLE"
+
+
 def test_h23_day_master_rejects_second_without_any_first_day() -> None:
     candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
     context = _context(candidates)
@@ -147,3 +166,34 @@ def test_h23_day_master_rejects_second_without_any_first_day() -> None:
     status = _solve(context, {("S", "P3")})
 
     assert status == "INFEASIBLE"
+
+
+def test_s10_excludes_configured_first_to_second_transition() -> None:
+    candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
+    context = _context(candidates)
+    context.class_pair_overlap_rules = (
+        ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),
+    )
+    ClassRoomContinuityConstraint().apply(context)
+
+    RoomChangeGapPreferenceConstraint().apply(context)
+
+    assert context.penalty_terms_by_priority.get(9, []) == []
+
+
+def test_s12_excludes_configured_second_class() -> None:
+    candidates = (_candidate("F", "P2"), _candidate("S", "P3"))
+    context = _context(candidates)
+    context.class_pair_overlap_rules = (
+        ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),
+    )
+    ClassRoomContinuityConstraint().apply(context)
+
+    ClassSingleLessonDayPreferenceConstraint().apply(context)
+
+    assert len(context.penalty_terms_by_priority[15]) == 1
+
+
+def test_h23_is_registered_in_full_and_day_level_models() -> None:
+    assert any(isinstance(item, ClassSuccessorConstraint) for item in DEFAULT_HARD_CONSTRAINTS)
+    assert any(isinstance(item, ClassSuccessorDayConstraint) for item in DAY_LEVEL_MASTER_CONSTRAINTS)
