@@ -9,6 +9,7 @@ SOFT_CONSTRAINT_PRIORITY_POLICY: dict[str, int] = {
     "S18": 60,
     "S10": 60,
     "S23": 50,
+    "S24": 50,
     "S17": 40,
     "S22": 40,
     "S21": 30,

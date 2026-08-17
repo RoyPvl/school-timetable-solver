@@ -9,3 +9,7 @@ def test_s10_priority_is_60() -> None:
 
 def test_s22_priority_is_40() -> None:
     assert soft_constraint_priority("S22") == 40
+
+
+def test_s24_priority_is_50() -> None:
+    assert soft_constraint_priority("S24") == 50
