@@ -788,7 +788,7 @@ def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> Non
     assert TeacherDayOffDistributionPreferenceConstraint.priority == 30
     assert ClassSubjectScheduleBalancePreferenceConstraint.priority == 20
     assert HomeroomBoundarySlotPreferenceConstraint.priority == 10
-    assert RoomChangeGapPreferenceConstraint.priority == 5
+    assert RoomChangeGapPreferenceConstraint.priority == 60
     assert ClassSubjectDailyRepeatPreferenceConstraint.optimization_scope == "assignment"
     assert ClassSubjectScheduleBalancePreferenceConstraint.optimization_scope == "assignment"
     assert ClassSubjectDoubleThenNextDayPreferenceConstraint.optimization_scope == "assignment"

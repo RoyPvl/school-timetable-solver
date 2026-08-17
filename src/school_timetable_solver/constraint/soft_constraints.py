@@ -495,6 +495,48 @@ class TeacherLateThenEarlyPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class TeacherCampusTransferPreferenceConstraint:
+    """S24: minimize teacher-days requiring a same-day campus transfer."""
+
+    rule_id = "S24"
+    priority = soft_constraint_priority(rule_id)
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        variables_by_teacher_day_campus: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            variables_by_teacher_day_campus[
+                (candidate.teacher_id, candidate.target_date, candidate.campus_id)
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        campus_presence_by_teacher_day: dict[
+            tuple[str, date],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for (teacher_id, target_date, campus_id), variables in variables_by_teacher_day_campus.items():
+            presence = context.model.new_bool_var(
+                f"s24_teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
+            )
+            context.model.add_max_equality(presence, variables)
+            campus_presence_by_teacher_day[(teacher_id, target_date)].append(presence)
+
+        for (teacher_id, target_date), campus_variables in campus_presence_by_teacher_day.items():
+            if len(campus_variables) < 2:
+                continue
+            transfer = context.model.new_bool_var(
+                f"s24_teacher_transfer_day__{teacher_id}__{target_date.isoformat()}"
+            )
+            campus_count = sum(campus_variables)
+            context.model.add(campus_count >= 2).only_enforce_if(transfer)
+            context.model.add(campus_count <= 1).only_enforce_if(transfer.negated())
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(transfer)
+
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassDailyContiguityPreferenceConstraint:
     """S11: minimize empty periods between one class's first and last lesson."""
 
@@ -987,6 +1029,7 @@ DEFAULT_SOFT_CONSTRAINTS = (
     TeacherDayOffDistributionPreferenceConstraint(),
     TeacherCampusTransferGapPreferenceConstraint(),
     TeacherLateThenEarlyPreferenceConstraint(),
+    TeacherCampusTransferPreferenceConstraint(),
     RoomChangeGapPreferenceConstraint(),
     RoomPriorityPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
@@ -1004,6 +1047,7 @@ SoftConstraint = (
     | TeacherDayOffDistributionPreferenceConstraint
     | TeacherCampusTransferGapPreferenceConstraint
     | TeacherLateThenEarlyPreferenceConstraint
+    | TeacherCampusTransferPreferenceConstraint
     | RoomChangeGapPreferenceConstraint
     | RoomPriorityPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
