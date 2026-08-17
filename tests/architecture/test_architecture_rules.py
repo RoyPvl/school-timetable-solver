@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from school_timetable_solver.composition import SOFT_CONSTRAINT_PRIORITY_POLICY
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
+from school_timetable_solver.constraint.soft_constraint_policy import (
+    SOFT_CONSTRAINT_PRIORITY_POLICY,
+)
 from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 
 SOURCE_ROOT = Path("src/school_timetable_solver")
@@ -131,6 +133,7 @@ def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
         "S20",
         "S21",
         "S22",
+        "S23",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)
 
@@ -143,6 +146,7 @@ def test_soft_constraint_priority_policy_matches_operational_order() -> None:
         "S14": 80,
         "S15": 70,
         "S18": 60,
+        "S23": 50,
         "S17": 40,
         "S21": 30,
         "S22": 30,
@@ -154,3 +158,21 @@ def test_soft_constraint_priority_policy_matches_operational_order() -> None:
     assert set(SOFT_CONSTRAINT_PRIORITY_POLICY) == {
         constraint.rule_id for constraint in DEFAULT_SOFT_CONSTRAINTS
     }
+    assert all(
+        constraint.priority == SOFT_CONSTRAINT_PRIORITY_POLICY[constraint.rule_id]
+        for constraint in DEFAULT_SOFT_CONSTRAINTS
+    )
+
+
+def test_soft_constraint_priorities_are_not_numeric_literals() -> None:
+    path = SOURCE_ROOT / "constraint" / "soft_constraints.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    numeric_priority_assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "priority" for target in node.targets)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, int)
+    ]
+    assert not numeric_priority_assignments

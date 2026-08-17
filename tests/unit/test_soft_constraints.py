@@ -21,6 +21,7 @@ from school_timetable_solver.constraint.soft_constraints import (
     RoomChangeGapPreferenceConstraint,
     RoomPriorityPreferenceConstraint,
     TeacherDayOffDistributionPreferenceConstraint,
+    TeacherLateThenEarlyPreferenceConstraint,
 )
 from school_timetable_solver.constraint.solver_context import SolverContext
 from school_timetable_solver.model.input_models import TeacherDayOffRuleModel
@@ -776,22 +777,18 @@ def test_s21_prefers_three_early_and_one_late_day_off() -> None:
 
 
 def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> None:
-    assert (
-        HomeroomBoundarySlotPreferenceConstraint.priority
-        > TeacherDayOffDistributionPreferenceConstraint.priority
-        > ClassSubjectDailyRepeatPreferenceConstraint.priority
-    )
-    assert (
-        ClassSubjectDailyRepeatPreferenceConstraint.priority
-        > ClassSubjectDoubleThenNextDayPreferenceConstraint.priority
-        > ClassDailyContiguityPreferenceConstraint.priority
-        > ClassConsecutiveAttendancePreferenceConstraint.priority
-        > ClassSingleLessonDayPreferenceConstraint.priority
-        > ClassSubjectScheduleBalancePreferenceConstraint.priority
-        > ClassSubjectConsecutiveRepeatPreferenceConstraint.priority
-        > LessonCountInScopePreferenceConstraint.priority
-        > RoomChangeGapPreferenceConstraint.priority
-    )
+    assert ClassSingleLessonDayPreferenceConstraint.priority == 100
+    assert ClassDailyContiguityPreferenceConstraint.priority == 90
+    assert ClassSubjectConsecutiveRepeatPreferenceConstraint.priority == 80
+    assert ClassSubjectDailyRepeatPreferenceConstraint.priority == 80
+    assert ClassSubjectDoubleThenNextDayPreferenceConstraint.priority == 70
+    assert ClassConsecutiveAttendancePreferenceConstraint.priority == 60
+    assert TeacherLateThenEarlyPreferenceConstraint.priority == 50
+    assert LessonCountInScopePreferenceConstraint.priority == 40
+    assert TeacherDayOffDistributionPreferenceConstraint.priority == 30
+    assert ClassSubjectScheduleBalancePreferenceConstraint.priority == 20
+    assert HomeroomBoundarySlotPreferenceConstraint.priority == 10
+    assert RoomChangeGapPreferenceConstraint.priority == 5
     assert ClassSubjectDailyRepeatPreferenceConstraint.optimization_scope == "assignment"
     assert ClassSubjectScheduleBalancePreferenceConstraint.optimization_scope == "assignment"
     assert ClassSubjectDoubleThenNextDayPreferenceConstraint.optimization_scope == "assignment"
@@ -801,3 +798,53 @@ def test_soft_constraint_priorities_and_optimization_scopes_are_ordered() -> Non
     assert ClassSubjectConsecutiveRepeatPreferenceConstraint.optimization_scope == "assignment"
     assert LessonCountInScopePreferenceConstraint.optimization_scope == "assignment"
     assert RoomChangeGapPreferenceConstraint.optimization_scope == "room"
+
+
+def _s23_context(early_date: date) -> SolverContext:
+    candidates = (
+        CandidateSlotModel("LATE", "Q1", TARGET_DATE, "P6", "T1", "C1", "CL1", "S1"),
+        CandidateSlotModel("EARLY", "Q2", early_date, "P1", "T1", "C1", "CL2", "S1"),
+    )
+    model = cp_model.CpModel()
+    variables = {
+        candidate.candidate_id: model.new_bool_var(candidate.candidate_id)
+        for candidate in candidates
+    }
+    return SolverContext(
+        model=model,
+        candidates=candidates,
+        assignment_variables=variables,
+        required_counts={"Q1": 1, "Q2": 1},
+        room_capacities={"C1": 1},
+        class_daily_limits={("CL1", TARGET_DATE): 6, ("CL2", early_date): 6},
+        requirement_daily_limits={"Q1": None, "Q2": None},
+        teacher_daily_limits={("T1", TARGET_DATE): 6, ("T1", early_date): 6},
+        teacher_first_last_period_forbidden={
+            ("T1", TARGET_DATE): False,
+            ("T1", early_date): False,
+        },
+        class_attendance_limits={("CL1", TARGET_DATE): 6, ("CL2", early_date): 6},
+        period_orders={f"P{index}": index for index in range(1, 7)},
+        calendar_dates=(TARGET_DATE, early_date),
+    )
+
+
+def test_s23_penalizes_last_period_then_next_calendar_day_first_period() -> None:
+    context = _s23_context(TARGET_DATE + timedelta(days=1))
+    constraint = TeacherLateThenEarlyPreferenceConstraint()
+    constraint.apply(context)
+    for variable in context.assignment_variables.values():
+        context.model.add(variable == 1)
+    context.model.minimize(sum(context.penalty_terms_by_priority[constraint.priority]))
+
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(context.model)) == "OPTIMAL"
+    assert solver.objective_value == 1
+
+
+def test_s23_does_not_treat_next_open_day_as_next_calendar_day() -> None:
+    context = _s23_context(TARGET_DATE + timedelta(days=2))
+    constraint = TeacherLateThenEarlyPreferenceConstraint()
+    constraint.apply(context)
+
+    assert not context.penalty_terms_by_priority.get(constraint.priority)

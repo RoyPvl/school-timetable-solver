@@ -846,3 +846,28 @@ def test_result_validator_allows_multiple_single_period_internal_gaps(
 
     assert not [issue for issue in report.issues if issue.rule_id == "H16"]
     assert [issue for issue in report.issues if issue.rule_id == "S11"]
+
+
+def test_result_validator_warns_for_teacher_last_period_then_next_day_first_period(
+    minimal_input_data: InputDataModel,
+) -> None:
+    resolved = RuleResolverService().execute(minimal_input_data)
+    first_date = date(2026, 7, 27)
+    next_date = first_date + timedelta(days=1)
+    lessons = (
+        _lesson(target_date=first_date, period_id="P6", teacher_id="T1"),
+        _lesson(
+            requirement_id="Q2",
+            target_date=next_date,
+            period_id="P1",
+            teacher_id="T1",
+            class_id="CL2",
+            room_id="R2",
+        ),
+    )
+
+    report = ValidateResultService().execute(minimal_input_data, resolved, lessons)
+
+    s23_issues = [issue for issue in report.issues if issue.rule_id == "S23"]
+    assert len(s23_issues) == 1
+    assert s23_issues[0].severity == "WARNING"

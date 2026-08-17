@@ -172,9 +172,10 @@ def test_s10_excludes_configured_first_to_second_transition() -> None:
     context.class_pair_overlap_rules = (ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),)
     ClassRoomContinuityConstraint().apply(context)
 
-    RoomChangeGapPreferenceConstraint().apply(context)
+    constraint = RoomChangeGapPreferenceConstraint()
+    constraint.apply(context)
 
-    assert context.penalty_terms_by_priority.get(9, []) == []
+    assert context.penalty_terms_by_priority.get(constraint.priority, []) == []
 
 
 def test_s12_excludes_configured_second_class() -> None:
@@ -183,9 +184,10 @@ def test_s12_excludes_configured_second_class() -> None:
     context.class_pair_overlap_rules = (ClassPairOverlapRuleModel("PAIR", "pair", True, "F", "S"),)
     ClassRoomContinuityConstraint().apply(context)
 
-    ClassSingleLessonDayPreferenceConstraint().apply(context)
+    constraint = ClassSingleLessonDayPreferenceConstraint()
+    constraint.apply(context)
 
-    assert len(context.penalty_terms_by_priority[15]) == 1
+    assert len(context.penalty_terms_by_priority[constraint.priority]) == 1
 
 
 def test_h23_is_registered_in_full_and_day_level_models() -> None:

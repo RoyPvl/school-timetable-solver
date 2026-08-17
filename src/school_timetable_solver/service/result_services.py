@@ -126,6 +126,7 @@ class ValidateResultService:
         )
         self._report_room_change_gap_preference(input_data, lessons, issues)
         self._report_teacher_campus_transfer_gap_preference(input_data, lessons, issues)
+        self._report_teacher_late_then_early_preference(input_data, lessons, issues)
         self._report_class_daily_contiguity_preference(input_data, lessons, issues)
         self._report_class_consecutive_attendance_preference(
             resolved_rules,
@@ -985,6 +986,38 @@ class ValidateResultService:
                             ),
                         )
                     )
+
+    def _report_teacher_late_then_early_preference(
+        self,
+        input_data: InputDataModel,
+        lessons: tuple[ScheduledLessonModel, ...],
+        issues: list[ValidationIssueModel],
+    ) -> None:
+        if not input_data.periods:
+            return
+        first_period = min(input_data.periods, key=lambda item: item.output_order)
+        last_period = max(input_data.periods, key=lambda item: item.output_order)
+        occupied = {(lesson.teacher_id, lesson.target_date, lesson.period_id) for lesson in lessons}
+        late_slots = sorted(
+            (teacher_id, target_date)
+            for teacher_id, target_date, period_id in occupied
+            if period_id == last_period.period_id
+        )
+        for teacher_id, target_date in late_slots:
+            next_date = target_date + timedelta(days=1)
+            if (teacher_id, next_date, first_period.period_id) not in occupied:
+                continue
+            issues.append(
+                ValidationIssueModel(
+                    "S23",
+                    "WARNING",
+                    f"{teacher_id}/{target_date}/{next_date}",
+                    (
+                        "教師が最終時限を担当した翌暦日の最初時限にも配置されています: "
+                        f"{last_period.period_id} -> {first_period.period_id}"
+                    ),
+                )
+            )
 
     def _validate_class_room_continuity(
         self,
