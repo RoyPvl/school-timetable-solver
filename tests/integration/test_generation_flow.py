@@ -138,15 +138,24 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
 
     assert solver_result.statistics.status in {"OPTIMAL", "FEASIBLE"}
     assert sorted(lesson_counts.values()) == [1, 1, 2]
-    assert solver_result.statistics.constraint_rule_ids[-10:] == (
-        "S14",
-        "S15",
-        "S11",
-        "S18",
+    soft_rule_ids = tuple(
+        rule_id
+        for rule_id in solver_result.statistics.constraint_rule_ids
+        if rule_id.startswith("S")
+    )
+    assert soft_rule_ids == (
         "S12",
-        "S16",
+        "S11",
+        "S14",
         "S13",
+        "S15",
+        "S18",
+        "S23",
         "S17",
+        "S21",
+        "S22",
+        "S16",
+        "S20",
         "S19",
         "S10",
     )

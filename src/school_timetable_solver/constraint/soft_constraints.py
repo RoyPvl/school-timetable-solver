@@ -6,6 +6,7 @@ from itertools import combinations, pairwise
 
 from ortools.sat.python import cp_model
 
+from school_timetable_solver.constraint.soft_constraint_policy import soft_constraint_priority
 from school_timetable_solver.constraint.solver_context import (
     SolverContext,
     ensure_attendance_group_day_variables,
@@ -16,7 +17,7 @@ class RoomChangeGapPreferenceConstraint:
     """S10: minimize adjacent-period changes between different classes in one room."""
 
     rule_id = "S10"
-    priority = 9
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "room"
 
     def apply(self, context: SolverContext) -> None:
@@ -97,7 +98,7 @@ class RoomPriorityPreferenceConstraint:
     """S19: prefer higher-priority rooms for each scheduled lesson."""
 
     rule_id = "S19"
-    priority = 10
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "room"
 
     def apply(self, context: SolverContext) -> None:
@@ -146,7 +147,7 @@ class HomeroomBoundarySlotPreferenceConstraint:
     """S20: prefer the homeroom lesson at the class day's first and last slot."""
 
     rule_id = "S20"
-    priority = 35
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -364,7 +365,7 @@ class TeacherDayOffDistributionPreferenceConstraint:
     """S21: prefer configured day-off counts while retaining H18 flexibility."""
 
     rule_id = "S21"
-    priority = 34
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -394,7 +395,7 @@ class TeacherCampusTransferGapPreferenceConstraint:
     """S22: prefer two or more empty periods around a same-day campus transfer."""
 
     rule_id = "S22"
-    priority = 33
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -447,11 +448,58 @@ class TeacherCampusTransferGapPreferenceConstraint:
         context.applied_rule_ids.append(self.rule_id)
 
 
+class TeacherLateThenEarlyPreferenceConstraint:
+    """S23: avoid a teacher working the last period and next calendar day's first period."""
+
+    rule_id = "S23"
+    priority = soft_constraint_priority(rule_id)
+    optimization_scope = "assignment"
+
+    def apply(self, context: SolverContext) -> None:
+        if not context.period_orders:
+            context.applied_rule_ids.append(self.rule_id)
+            return
+        first_period_id = min(context.period_orders, key=context.period_orders.__getitem__)
+        last_period_id = max(context.period_orders, key=context.period_orders.__getitem__)
+        variables_by_teacher_date_period: dict[
+            tuple[str, date, str],
+            list[cp_model.IntVar],
+        ] = defaultdict(list)
+        for candidate in context.candidates:
+            if candidate.period_id not in {first_period_id, last_period_id}:
+                continue
+            variables_by_teacher_date_period[
+                (candidate.teacher_id, candidate.target_date, candidate.period_id)
+            ].append(context.assignment_variables[candidate.candidate_id])
+
+        presence: dict[tuple[str, date, str], cp_model.IntVar] = {}
+        for key, variables in variables_by_teacher_date_period.items():
+            selected = context.model.new_bool_var(
+                f"s23_teacher_edge_slot__{key[0]}__{key[1].isoformat()}__{key[2]}"
+            )
+            context.model.add_max_equality(selected, variables)
+            presence[key] = selected
+
+        teacher_dates = {(teacher_id, target_date) for teacher_id, target_date, _ in presence}
+        for teacher_id, target_date in sorted(teacher_dates):
+            late = presence.get((teacher_id, target_date, last_period_id))
+            early = presence.get((teacher_id, target_date + timedelta(days=1), first_period_id))
+            if late is None or early is None:
+                continue
+            penalty = context.model.new_bool_var(
+                f"s23_late_then_early__{teacher_id}__{target_date.isoformat()}"
+            )
+            context.model.add_bool_and([late, early]).only_enforce_if(penalty)
+            context.model.add_bool_or([late.negated(), early.negated(), penalty])
+            context.penalty_terms_by_priority.setdefault(self.priority, []).append(penalty)
+        context.applied_rule_ids.append(self.rule_id)
+
+
 class ClassDailyContiguityPreferenceConstraint:
     """S11: minimize empty periods between one class's first and last lesson."""
 
     rule_id = "S11"
-    priority = 20
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -494,7 +542,7 @@ class ClassSubjectDailyRepeatPreferenceConstraint:
     """S14: minimize same-day lesson pairs per class and subject."""
 
     rule_id = "S14"
-    priority = 30
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -571,7 +619,7 @@ class ClassSubjectScheduleBalancePreferenceConstraint:
     """S16: balance each class-subject requirement across its candidate dates."""
 
     rule_id = "S16"
-    priority = 14
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
     _SCORE_SCALE = 1000
 
@@ -671,7 +719,7 @@ class ClassSubjectDoubleThenNextDayPreferenceConstraint:
     """S15: minimize a subject recurring the day after a double lesson."""
 
     rule_id = "S15"
-    priority = 25
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -734,7 +782,7 @@ class ClassConsecutiveAttendancePreferenceConstraint:
     """S18: progressively penalize attendance beyond each class's preferred streak."""
 
     rule_id = "S18"
-    priority = 18
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -783,7 +831,7 @@ class ClassSingleLessonDayPreferenceConstraint:
     """S12: minimize one-lesson class days, excluding H23 second and single-subject classes."""
 
     rule_id = "S12"
-    priority = 15
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -823,7 +871,7 @@ class ClassSubjectConsecutiveRepeatPreferenceConstraint:
     """S13: minimize adjacent lessons of one subject for one class."""
 
     rule_id = "S13"
-    priority = 12
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -891,7 +939,7 @@ class LessonCountInScopePreferenceConstraint:
     """S17: minimize deviation from configured lesson counts in slot scopes."""
 
     rule_id = "S17"
-    priority = 11
+    priority = soft_constraint_priority(rule_id)
     optimization_scope = "assignment"
 
     def apply(self, context: SolverContext) -> None:
@@ -938,6 +986,7 @@ DEFAULT_SOFT_CONSTRAINTS = (
     HomeroomBoundarySlotPreferenceConstraint(),
     TeacherDayOffDistributionPreferenceConstraint(),
     TeacherCampusTransferGapPreferenceConstraint(),
+    TeacherLateThenEarlyPreferenceConstraint(),
     RoomChangeGapPreferenceConstraint(),
     RoomPriorityPreferenceConstraint(),
     ClassDailyContiguityPreferenceConstraint(),
@@ -954,6 +1003,7 @@ SoftConstraint = (
     HomeroomBoundarySlotPreferenceConstraint
     | TeacherDayOffDistributionPreferenceConstraint
     | TeacherCampusTransferGapPreferenceConstraint
+    | TeacherLateThenEarlyPreferenceConstraint
     | RoomChangeGapPreferenceConstraint
     | RoomPriorityPreferenceConstraint
     | ClassDailyContiguityPreferenceConstraint
