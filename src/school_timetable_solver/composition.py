@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
+from school_timetable_solver.adapter.excel_input_router import CompatibleExcelInputReaderAdapter
 from school_timetable_solver.adapter.excel_output_adapter import ExcelTimetableWriterAdapter
 from school_timetable_solver.adapter.execution_log_adapter import ExecutionLogAdapter
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
@@ -36,7 +36,7 @@ class ApplicationComposition:
     ) -> ValidateInputService:
         ExecutionLogAdapter().configure(log_path)
         return ValidateInputService(
-            input_reader=ExcelInputReaderAdapter(),
+            input_reader=CompatibleExcelInputReaderAdapter(),
             validators=DEFAULT_INPUT_VALIDATORS,
             rule_resolver=RuleResolverService(),
             candidate_builder=CandidateBuilderService(),
@@ -49,7 +49,7 @@ class ApplicationComposition:
     ) -> GenerateTimetableService:
         ExecutionLogAdapter().configure(log_path)
         return GenerateTimetableService(
-            input_reader=ExcelInputReaderAdapter(),
+            input_reader=CompatibleExcelInputReaderAdapter(),
             validators=DEFAULT_INPUT_VALIDATORS,
             rule_resolver=RuleResolverService(),
             candidate_builder=CandidateBuilderService(),
