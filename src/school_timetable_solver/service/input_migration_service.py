@@ -23,5 +23,5 @@ class MigrateInputWorkbookToV2Service:
         if result.input_data is None or any(issue.severity == "ERROR" for issue in result.issues):
             return result
         self._writer.write(output_path, result.input_data)
-        self._postprocessor.execute(output_path)
+        self._postprocessor.execute(output_path, result.input_data)
         return result
