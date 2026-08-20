@@ -9,6 +9,9 @@ dependencies = [
     "ortools>=9.14.6206",
 ]
 
+[project.scripts]
+school-timetable-migrate-v2 = "school_timetable_solver.migrate_input_v2:main"
+
 [dependency-groups]
 dev = [
     "pyright>=1.1.403",
