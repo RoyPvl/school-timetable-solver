@@ -6,7 +6,9 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 from school_timetable_solver.adapter.excel_input_adapter import ExcelInputReaderAdapter
-from school_timetable_solver.adapter.excel_input_v2_adapter import ExcelInputV2ReaderAdapter
+from school_timetable_solver.adapter.excel_input_v2_reference_adapter import (
+    ReferenceLabelExcelInputV2ReaderAdapter,
+)
 from school_timetable_solver.model.result_models import InputReadResultModel, ValidationIssueModel
 
 
@@ -15,7 +17,7 @@ class CompatibleExcelInputReaderAdapter:
 
     def __init__(self) -> None:
         self._v1_reader = ExcelInputReaderAdapter()
-        self._v2_reader = ExcelInputV2ReaderAdapter()
+        self._v2_reader = ReferenceLabelExcelInputV2ReaderAdapter()
 
     def read(self, path: Path) -> InputReadResultModel:
         if not path.is_file() or path.suffix.lower() != ".xlsx":
