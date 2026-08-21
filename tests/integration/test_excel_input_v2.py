@@ -7,10 +7,10 @@ from openpyxl.utils.cell import range_boundaries
 
 from school_timetable_solver.adapter.excel_input_router import CompatibleExcelInputReaderAdapter
 from school_timetable_solver.adapter.excel_input_v2_adapter import BLANK_TOKEN, NO, YES
-from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
-from school_timetable_solver.adapter.excel_v2_workbook_postprocessor import (
-    ExcelV2WorkbookPostprocessor,
+from school_timetable_solver.adapter.excel_v2_reference_postprocessor import (
+    ReferenceLabelExcelV2WorkbookPostprocessor,
 )
+from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
 from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
 from school_timetable_solver.model.master_models import SubjectModel, TeacherModel
 from school_timetable_solver.service.planning_services import RuleResolverService
@@ -116,7 +116,7 @@ def test_v2_migration_preserves_resolved_meaning_for_direct_class_rule_without_c
     path = tmp_path / "input_v2.xlsx"
 
     ExcelV2WorkbookWriterAdapter().write(path, source)
-    ExcelV2WorkbookPostprocessor().execute(path, source)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, source)
     result = CompatibleExcelInputReaderAdapter().read(path)
 
     assert result.input_data is not None, result.issues
@@ -166,7 +166,7 @@ def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
     path = tmp_path / "input_v2_reference_labels.xlsx"
 
     ExcelV2WorkbookWriterAdapter().write(path, source)
-    ExcelV2WorkbookPostprocessor().execute(path, source)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, source)
     result = CompatibleExcelInputReaderAdapter().read(path)
 
     assert result.input_data is not None, result.issues
