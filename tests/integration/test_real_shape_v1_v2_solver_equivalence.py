@@ -204,8 +204,8 @@ def test_real_shape_v1_v2_have_identical_resolved_and_solver_results(tmp_path) -
     old_data = _load_fixture("solver_equivalence_old.b64")
     new_data = _load_fixture("solver_equivalence_new.b64")
 
-    assert ReferenceIntegrityValidator().validate(old_data) == ()
-    assert ReferenceIntegrityValidator().validate(new_data) == ()
+    assert ReferenceIntegrityValidator().validate(old_data) == []
+    assert ReferenceIntegrityValidator().validate(new_data) == []
 
     resolver = RuleResolverService()
     old_resolved = resolver.execute(old_data)
