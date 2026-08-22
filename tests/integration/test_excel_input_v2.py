@@ -3,14 +3,16 @@ from __future__ import annotations
 from dataclasses import replace
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
 from school_timetable_solver.adapter.excel_input_router import CompatibleExcelInputReaderAdapter
 from school_timetable_solver.adapter.excel_input_v2_adapter import BLANK_TOKEN, NO, YES
-from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
-from school_timetable_solver.adapter.excel_v2_workbook_postprocessor import (
-    ExcelV2WorkbookPostprocessor,
+from school_timetable_solver.adapter.excel_v2_reference_postprocessor import (
+    ReferenceLabelExcelV2WorkbookPostprocessor,
 )
+from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
 from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
+from school_timetable_solver.model.master_models import SubjectModel, TeacherModel
 from school_timetable_solver.service.planning_services import RuleResolverService
 
 
@@ -114,7 +116,7 @@ def test_v2_migration_preserves_resolved_meaning_for_direct_class_rule_without_c
     path = tmp_path / "input_v2.xlsx"
 
     ExcelV2WorkbookWriterAdapter().write(path, source)
-    ExcelV2WorkbookPostprocessor().execute(path, source)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, source)
     result = CompatibleExcelInputReaderAdapter().read(path)
 
     assert result.input_data is not None, result.issues
@@ -139,5 +141,69 @@ def test_v2_migration_preserves_resolved_meaning_for_direct_class_rule_without_c
     try:
         worksheet = workbook["06_基本配置ルール"]
         assert not worksheet.column_dimensions["A"].hidden
+    finally:
+        workbook.close()
+
+
+def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
+    tmp_path,
+    minimal_input_data: InputDataModel,
+) -> None:
+    campus_id = minimal_input_data.campuses[0].campus_id
+    blank_teachers = (
+        TeacherModel("TEACHER_BLANK_A", "", campus_id, True),
+        TeacherModel("TEACHER_BLANK_B", "", campus_id, True),
+    )
+    blank_subjects = (
+        SubjectModel("SUBJECT_BLANK_A", "", "other", True),
+        SubjectModel("SUBJECT_BLANK_B", "", "other", True),
+    )
+    source = replace(
+        minimal_input_data,
+        teachers=(*minimal_input_data.teachers, *blank_teachers),
+        subjects=(*minimal_input_data.subjects, *blank_subjects),
+    )
+    path = tmp_path / "input_v2_reference_labels.xlsx"
+
+    ExcelV2WorkbookWriterAdapter().write(path, source)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, source)
+    result = CompatibleExcelInputReaderAdapter().read(path)
+
+    assert result.input_data is not None, result.issues
+    assert not [issue for issue in result.issues if issue.severity == "ERROR"]
+    assert result.input_data.teachers == source.teachers
+    assert result.input_data.subjects == source.subjects
+
+    workbook = load_workbook(path, data_only=False)
+    try:
+        system_sheet = workbook["_system"]
+        assert "T_REFERENCE_MAP" in system_sheet.tables
+        table = system_sheet.tables["T_REFERENCE_MAP"]
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        headers = [
+            system_sheet.cell(min_row, column).value
+            for column in range(min_col, max_col + 1)
+        ]
+        rows = [
+            {
+                str(header): system_sheet.cell(row, column).value
+                for header, column in zip(headers, range(min_col, max_col + 1), strict=True)
+            }
+            for row in range(min_row + 1, max_row + 1)
+        ]
+        teacher_rows = [row for row in rows if row["参照種別"] == "teacher"]
+        subject_rows = [row for row in rows if row["参照種別"] == "subject"]
+        assert len({row["入力用ラベル"] for row in teacher_rows}) == len(teacher_rows)
+        assert len({row["入力用ラベル"] for row in subject_rows}) == len(subject_rows)
+        assert {
+            row["内部ID"]: row["出力表示名"]
+            for row in teacher_rows
+            if row["内部ID"] in {item.teacher_id for item in blank_teachers}
+        } == {"TEACHER_BLANK_A": None, "TEACHER_BLANK_B": None}
+        assert {
+            row["内部ID"]: row["出力表示名"]
+            for row in subject_rows
+            if row["内部ID"] in {item.subject_id for item in blank_subjects}
+        } == {"SUBJECT_BLANK_A": None, "SUBJECT_BLANK_B": None}
     finally:
         workbook.close()

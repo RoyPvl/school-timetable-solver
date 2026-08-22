@@ -37,7 +37,11 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/school_timetable_solver/adapter/excel_input_v2_adapter.py" = ["I001", "RUF001", "RUF012", "F841"]
+"src/school_timetable_solver/adapter/excel_input_v2_reference_adapter.py" = ["F401"]
+"src/school_timetable_solver/adapter/excel_input_v2_entity_reference_adapter.py" = ["RUF001"]
 "src/school_timetable_solver/adapter/excel_v2_workbook_adapter.py" = ["I001", "RUF001", "UP035", "F401"]
+"src/school_timetable_solver/adapter/excel_v2_workbook_postprocessor.py" = ["UP035", "RUF001"]
+"src/school_timetable_solver/adapter/excel_v2_reference_postprocessor.py" = ["I001", "UP035", "RUF001", "RUF012", "RUF059"]
 "tests/integration/test_excel_input_v2.py" = ["RUF001"]
 
 [tool.pyright]
