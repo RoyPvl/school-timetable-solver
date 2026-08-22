@@ -207,3 +207,28 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
                 )
             )
         return result
+
+    def _read_lesson_count_rules(
+        self,
+        rule_rows: list[dict[str, Any]],
+        target_rows: list[dict[str, Any]],
+        class_by_key: dict[tuple[str, str], str],
+        subject_by_name: dict[str, str],
+        period_columns: tuple[tuple[str, str], ...],
+        issues: list[ValidationIssueModel],
+        *,
+        soft: bool,
+    ) -> list[Any]:
+        result = super()._read_lesson_count_rules(
+            rule_rows,
+            target_rows,
+            class_by_key,
+            subject_by_name,
+            period_columns,
+            issues,
+            soft=soft,
+        )
+        return [
+            replace(item, segment_id=f"{item.rule_id}_{item.segment_id}")
+            for item in result
+        ]
