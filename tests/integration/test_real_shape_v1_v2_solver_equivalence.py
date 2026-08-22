@@ -31,7 +31,10 @@ from school_timetable_solver.model.master_models import (
     TeacherModel,
 )
 from school_timetable_solver.model.result_models import GenerationRequestModel
-from school_timetable_solver.service.planning_services import CandidateBuilderService, RuleResolverService
+from school_timetable_solver.service.planning_services import (
+    CandidateBuilderService,
+    RuleResolverService,
+)
 from school_timetable_solver.service.solver_service import TimetableSolverService
 from school_timetable_solver.validator.input_validators import ReferenceIntegrityValidator
 
