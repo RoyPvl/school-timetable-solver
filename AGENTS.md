@@ -37,3 +37,46 @@ OR-Tools may be imported only from `constraint/` and `service/solver_service.py`
 - Tests, Ruff format/lint, pyright, and sample End-to-End execution are mandatory for changes.
 
 Before implementation, identify changed files, major classes, public methods, formal `rule_id`, validations and their placement reason, and tests. Search for existing equivalent responsibilities before adding code.
+
+## AI Context Hub
+
+This repository is connected to the persistent AI Context Hub.
+
+### Integration artifacts
+
+`AGENTS.md` and `.ai-context.yaml` are tracked integration artifacts. Do not add either to
+`.gitignore`, and do not record device-specific paths, credentials, or tokens in them.
+
+### Mandatory task bootstrap
+
+Before planning, answering, editing files, or making implementation decisions for every task:
+
+1. Read `.ai-context.yaml`.
+2. Resolve the Hub: `AI_KNOWLEDGE_HOME` -> sibling `../ai-knowledge` -> workspace clone -> configured GitHub access.
+3. When using a local Hub clone, run `git status` and, when clean, `git pull --ff-only` before reading Context. Resolve divergence with the Hub multi-device workflow; never force-push or mechanically discard either side.
+4. Read the Hub `AGENTS.md`, then this project's `overview.md` and `current-state.md` from `project.context_path`.
+5. Read only task-relevant Decisions or shared Knowledge after that.
+6. For Source Repository Git writes, follow `protocol.git` in `.ai-context.yaml` (or the Hub's `workflows/source-repo-git.md`).
+
+If the Hub cannot be resolved or read, treat persistent Context as unavailable, avoid assumptions about project history, inspect the Source Repository more thoroughly, and report the limitation when material.
+
+### AI-native Git lifecycle
+
+Unless a stricter explicit repository policy applies, write tasks follow:
+
+```text
+sync main -> short-lived task branch -> implement / validate -> commit / push -> Pull Request
+-> final merge gate -> squash merge or auto-merge -> remote / local branch cleanup
+```
+
+Creating a Pull Request is not normally completion. Before merging, re-check the final diff,
+checks, reviews, conflicts, and head SHA. Do not delete dirty, local-only, open-PR, unmerged, or
+uncertain branches.
+
+### Trust and update rules
+
+The Source Repository remains the source of truth for implementation and formal specifications.
+After final integration, apply the Hub Context Delta Check. Update the Hub only for durable state,
+decisions, constraints, reusable knowledge, or routing changes; commit and push any Hub update
+before considering the task complete. Do not store chat transcripts, routine logs, command output,
+or Pull Request history in the Hub.
