@@ -1,0 +1,9 @@
+version: 1
+hub:
+  repository: RoyPvl/ai-knowledge
+project:
+  key: school-timetable-solver
+  context_path: projects/school-timetable-solver
+protocol:
+  task: workflows/task-context-protocol.md
+  git: workflows/source-repo-git.md
