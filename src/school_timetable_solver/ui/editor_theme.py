@@ -52,9 +52,11 @@ QFrame#navigationPanel {
 }
 QLabel#navigationGroupTitle {
     background: transparent;
-    color: #d8dee8;
-    font-weight: 600;
-    padding: 4px 6px;
+    color: #7f8998;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 8px 8px 5px 8px;
+    border-bottom: 1px solid #2a3038;
 }
 QPushButton[navigation="true"] {
     background: transparent;
