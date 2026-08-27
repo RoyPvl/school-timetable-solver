@@ -10,7 +10,10 @@ from school_timetable_solver.model.project_models import (
     ProjectModel,
     ProjectSource,
 )
-from school_timetable_solver.model.result_models import GenerationRequestModel, GenerationResultModel
+from school_timetable_solver.model.result_models import (
+    GenerationRequestModel,
+    GenerationResultModel,
+)
 from school_timetable_solver.service.protocols import (
     ExecutionLogger,
     InputReader,
