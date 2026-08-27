@@ -99,7 +99,7 @@ class HomePage(QWidget):
         root.addWidget(title)
 
         actions = QHBoxLayout()
-        new_button = QPushButton("＋ 新規作成")
+        new_button = QPushButton("+ 新規作成")
         import_button = QPushButton("Excelからインポート")
         new_button.clicked.connect(lambda _checked=False: self.new_requested.emit())
         import_button.clicked.connect(lambda _checked=False: self.import_requested.emit())
@@ -170,7 +170,7 @@ class EditorPage(QWidget):
             )
             self._source.setText(f"Excelインポート済み: {workbook_name}")
         else:
-            self._source.setText("新規作成データ（空）")
+            self._source.setText("新規作成データ (空)")
 
 
 class ProjectMetadataDialog(QDialog):
@@ -308,7 +308,7 @@ class DesktopWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "削除の確認",
-            f"「{project.name}」を削除しますか？",
+            f"「{project.name}」を削除しますか?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
