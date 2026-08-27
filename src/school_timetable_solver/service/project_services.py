@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,7 +33,7 @@ class CreateProjectService:
         self._project_store = project_store
 
     def execute(self, name: str | None = None) -> ProjectModel:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         project_name = name.strip() if name and name.strip() else self._next_untitled_name()
         project = ProjectModel(
             project_id=uuid4().hex,
@@ -69,7 +69,7 @@ class ImportProjectService:
             return ProjectImportResultModel(None, read_result.issues)
 
         settings = read_result.input_data.settings
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         name = settings.timetable_name.strip() or path.stem
         project = ProjectModel(
             project_id=uuid4().hex,
@@ -96,7 +96,7 @@ class UpdateProjectMetadataService:
             project_id,
             normalized_name,
             note.strip(),
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
 
 
@@ -108,7 +108,7 @@ class DuplicateProjectService:
         source = self._project_store.load(project_id)
         if source is None:
             return None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         duplicate = ProjectModel(
             project_id=uuid4().hex,
             name=f"{source.name} のコピー",
