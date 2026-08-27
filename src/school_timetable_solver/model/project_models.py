@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+from school_timetable_solver.model.input_models import GenerationMode
 from school_timetable_solver.model.result_models import ValidationIssueModel
 
 
@@ -28,3 +29,13 @@ class ProjectModel:
 class ProjectImportResultModel:
     project: ProjectModel | None
     issues: tuple[ValidationIssueModel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectExecutionSettingsModel:
+    output_path: Path
+    log_path: Path | None
+    solve_mode: GenerationMode
+    max_solve_seconds: float
+    random_seed: int
+    num_search_workers: int
