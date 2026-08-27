@@ -2,13 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from school_timetable_solver.adapter.project_store_adapter import LocalProjectStoreAdapter
-from school_timetable_solver.model.input_models import InputDataModel, InputWorkbookSettingsModel
-from school_timetable_solver.model.project_models import ProjectSource
-from school_timetable_solver.model.result_models import InputReadResultModel, ValidationIssueModel
+from school_timetable_solver.model.input_models import (
+    GenerationMode,
+    InputDataModel,
+    InputWorkbookSettingsModel,
+)
+from school_timetable_solver.model.project_models import (
+    ProjectExecutionSettingsModel,
+    ProjectSource,
+)
+from school_timetable_solver.model.result_models import (
+    GenerationRequestModel,
+    GenerationResultModel,
+    InputReadResultModel,
+    ValidationIssueModel,
+    ValidationReportModel,
+)
 from school_timetable_solver.service.project_services import (
     CreateProjectService,
     DuplicateProjectService,
+    ExecuteProjectService,
     ImportProjectService,
 )
 
@@ -44,6 +60,31 @@ class FailedInputReader:
                 ),
             ),
         )
+
+
+class RecordingGenerator:
+    def __init__(self) -> None:
+        self.request: GenerationRequestModel | None = None
+
+    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
+        self.request = request
+        return GenerationResultModel(
+            status="VALIDATED",
+            exit_code=0,
+            request=request,
+            input_data=None,
+            lessons=(),
+            validation_report=ValidationReportModel(()),
+            solver_statistics=None,
+        )
+
+
+class RecordingExecutionLogger:
+    def __init__(self) -> None:
+        self.path: Path | None = None
+
+    def configure(self, path: Path | None) -> None:
+        self.path = path
 
 
 def test_create_project_assigns_unique_untitled_names(tmp_path: Path) -> None:
@@ -104,3 +145,61 @@ def test_duplicate_project_copies_imported_workbook(tmp_path: Path) -> None:
     assert imported.imported_workbook_path is not None
     assert duplicate.imported_workbook_path != imported.imported_workbook_path
     assert duplicate.imported_workbook_path.read_bytes() == b"workbook"
+
+
+def test_execute_project_maps_gui_settings_to_generation_request(tmp_path: Path) -> None:
+    store = LocalProjectStoreAdapter(tmp_path / "app-data")
+    store.initialize()
+    source = tmp_path / "input.xlsx"
+    source.write_bytes(b"workbook")
+    project = ImportProjectService(store, SuccessfulInputReader()).execute(source).project
+    assert project is not None
+    assert project.imported_workbook_path is not None
+
+    generator = RecordingGenerator()
+    execution_logger = RecordingExecutionLogger()
+    settings = ProjectExecutionSettingsModel(
+        output_path=tmp_path / "result.xlsx",
+        log_path=tmp_path / "run.log",
+        solve_mode=GenerationMode.STRICT,
+        max_solve_seconds=120.0,
+        random_seed=7,
+        num_search_workers=4,
+    )
+
+    result = ExecuteProjectService(store, generator, execution_logger).execute(
+        project.project_id,
+        settings,
+    )
+
+    assert result.exit_code == 0
+    assert generator.request is not None
+    assert generator.request.input_path == project.imported_workbook_path
+    assert generator.request.output_path == settings.output_path
+    assert generator.request.log_path == settings.log_path
+    assert generator.request.solve_mode is GenerationMode.STRICT
+    assert generator.request.max_solve_seconds == 120.0
+    assert generator.request.random_seed == 7
+    assert generator.request.num_search_workers == 4
+    assert execution_logger.path == settings.log_path
+
+
+def test_execute_blank_project_rejects_missing_runnable_input(tmp_path: Path) -> None:
+    store = LocalProjectStoreAdapter(tmp_path)
+    store.initialize()
+    project = CreateProjectService(store).execute()
+    settings = ProjectExecutionSettingsModel(
+        output_path=tmp_path / "result.xlsx",
+        log_path=None,
+        solve_mode=GenerationMode.VALIDATE_ONLY,
+        max_solve_seconds=60.0,
+        random_seed=1,
+        num_search_workers=8,
+    )
+
+    with pytest.raises(ValueError, match="実行可能な入力"):
+        ExecuteProjectService(
+            store,
+            RecordingGenerator(),
+            RecordingExecutionLogger(),
+        ).execute(project.project_id, settings)
