@@ -9,7 +9,13 @@ dependencies = [
     "ortools>=9.14.6206",
 ]
 
+[project.optional-dependencies]
+desktop = [
+    "pyside6>=6.8.2.1,<6.9",
+]
+
 [project.scripts]
+school-timetable-desktop = "school_timetable_solver.desktop_main:main"
 school-timetable-migrate-v2 = "school_timetable_solver.migrate_input_v2:main"
 
 [dependency-groups]
