@@ -5,11 +5,18 @@ from pathlib import Path
 from uuid import uuid4
 
 from school_timetable_solver.model.project_models import (
+    ProjectExecutionSettingsModel,
     ProjectImportResultModel,
     ProjectModel,
     ProjectSource,
 )
-from school_timetable_solver.service.protocols import InputReader, ProjectStore
+from school_timetable_solver.model.result_models import GenerationRequestModel, GenerationResultModel
+from school_timetable_solver.service.protocols import (
+    ExecutionLogger,
+    InputReader,
+    ProjectStore,
+    TimetableGenerator,
+)
 
 
 class ListProjectsService:
@@ -127,3 +134,41 @@ class DeleteProjectService:
 
     def execute(self, project_id: str) -> bool:
         return self._project_store.delete(project_id)
+
+
+class ExecuteProjectService:
+    """Run an imported project with the existing generation use case."""
+
+    def __init__(
+        self,
+        project_store: ProjectStore,
+        generator: TimetableGenerator,
+        execution_logger: ExecutionLogger,
+    ) -> None:
+        self._project_store = project_store
+        self._generator = generator
+        self._execution_logger = execution_logger
+
+    def execute(
+        self,
+        project_id: str,
+        settings: ProjectExecutionSettingsModel,
+    ) -> GenerationResultModel:
+        project = self._project_store.load(project_id)
+        if project is None:
+            raise ValueError("保存済みデータが見つかりません")
+        input_path = project.imported_workbook_path
+        if input_path is None or not input_path.is_file():
+            raise ValueError("このデータには実行可能な入力がまだありません")
+
+        request = GenerationRequestModel(
+            input_path=input_path,
+            output_path=settings.output_path,
+            log_path=settings.log_path,
+            solve_mode=settings.solve_mode,
+            max_solve_seconds=settings.max_solve_seconds,
+            random_seed=settings.random_seed,
+            num_search_workers=settings.num_search_workers,
+        )
+        self._execution_logger.configure(settings.log_path)
+        return self._generator.execute(request)
