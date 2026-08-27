@@ -44,7 +44,6 @@ class SeasonalEditorWorkspace(QWidget):
         self._pages: dict[EditorSection, QWidget] = {}
         self._current_project: ProjectModel | None = None
 
-        self.setStyleSheet(_WORKSPACE_STYLE)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -266,9 +265,9 @@ class LessonCountsPage(QWidget):
         content.addWidget(group)
 
         summary = QHBoxLayout()
-        summary.addWidget(_summary_card("必要コマ合計", "自動集計"))
-        summary.addWidget(_summary_card("昨季との差", "将来自動集計"))
+        summary.addWidget(_summary_card("コマ合計", "自動集計"))
         summary.addWidget(_summary_card("校舎別合計", "自動集計"))
+        summary.addStretch(1)
         content.addLayout(summary)
 
         hint = QLabel(
@@ -597,93 +596,3 @@ def _master_tab(description: str, headers: tuple[str, ...]) -> QWidget:
     layout.addLayout(actions)
     layout.addWidget(_editable_table(headers, 9))
     return widget
-
-
-_WORKSPACE_STYLE = """
-QFrame#editorHeader {
-    background: #ffffff;
-    border-bottom: 1px solid #d9dde5;
-}
-QLabel#projectTitle {
-    font-size: 20px;
-    font-weight: 600;
-}
-QLabel#projectNote, QLabel#navigationNote, QLabel#pageDescription, QLabel#pageHint {
-    color: #667085;
-}
-QLabel#sourceBadge, QLabel#maintenanceBadge, QLabel#reviewStatus {
-    background: #eef2f7;
-    border-radius: 5px;
-    padding: 4px 8px;
-    color: #475467;
-}
-QFrame#prototypeNotice {
-    background: #fff8e6;
-    border-bottom: 1px solid #ead9a2;
-}
-QLabel#prototypeTitle {
-    font-weight: 600;
-}
-QFrame#navigationPanel {
-    background: #f7f8fa;
-    border-right: 1px solid #d9dde5;
-}
-QLabel#navigationGuide {
-    color: #667085;
-    font-size: 12px;
-}
-QLabel#navigationGroupTitle {
-    font-weight: 600;
-    color: #344054;
-    padding: 4px 6px;
-}
-QPushButton[navigation="true"] {
-    text-align: left;
-    border: 0;
-    border-radius: 6px;
-    padding: 9px 10px;
-    background: transparent;
-}
-QPushButton[navigation="true"]:hover {
-    background: #eaecf0;
-}
-QPushButton[navigation="true"]:checked {
-    background: #e5edff;
-    font-weight: 600;
-}
-QLabel#pageTitle {
-    font-size: 24px;
-    font-weight: 600;
-}
-QGroupBox {
-    font-weight: 600;
-    border: 1px solid #d9dde5;
-    border-radius: 7px;
-    margin-top: 12px;
-    padding-top: 12px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 5px;
-}
-QFrame#summaryCard, QFrame#conditionCard {
-    border: 1px solid #d9dde5;
-    border-radius: 7px;
-    background: #ffffff;
-}
-QLabel#summaryTitle {
-    color: #667085;
-}
-QLabel#summaryValue {
-    font-size: 18px;
-    font-weight: 600;
-}
-QLabel#conditionTitle {
-    font-weight: 600;
-}
-QTableWidget {
-    border: 1px solid #d9dde5;
-    gridline-color: #eaecf0;
-}
-"""
