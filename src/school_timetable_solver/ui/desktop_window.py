@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QObject, QStandardPaths, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QStandardPaths, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
