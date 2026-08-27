@@ -24,6 +24,8 @@ def _polish_table(table: QTableWidget) -> None:
     _rename_header(table, "曜", "曜日")
     _remove_header_column(table, "表示順")
 
+    # Presentation-only row index. It is not part of table business data and must
+    # never be serialized into ProjectDocument/InputDataModel or sent to Solver.
     vertical_header = table.verticalHeader()
     vertical_header.setVisible(True)
     vertical_header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -55,23 +57,28 @@ def _compact_teacher_load_cards(root: QWidget) -> None:
     for group in root.findChildren(QGroupBox):
         if group.title() != "教師別 予定コマ数 - 自動集計":
             continue
-        group.setMaximumHeight(170)
+
+        # Keep the area compact without clipping rows when many teachers exist.
+        group.setMinimumHeight(0)
+        group.setMaximumHeight(16777215)
         layout = group.layout()
         if isinstance(layout, QGridLayout):
             layout.setContentsMargins(8, 8, 8, 8)
             layout.setHorizontalSpacing(6)
             layout.setVerticalSpacing(6)
+
         for card in group.findChildren(QFrame, "summaryCard"):
-            card.setMaximumHeight(48)
+            card.setMinimumHeight(54)
+            card.setMaximumHeight(60)
             card_layout = card.layout()
             if card_layout is not None:
-                card_layout.setContentsMargins(8, 4, 8, 4)
+                card_layout.setContentsMargins(8, 5, 8, 5)
                 card_layout.setSpacing(1)
             for label in card.findChildren(QLabel):
                 if label.objectName() == "summaryTitle":
-                    label.setStyleSheet("font-size: 11px;")
+                    label.setStyleSheet("font-size: 14px;")
                 elif label.objectName() == "summaryValue":
-                    label.setStyleSheet("font-size: 13px; font-weight: 600;")
+                    label.setStyleSheet("font-size: 14px; font-weight: 600;")
 
 
 def _install_dynamic_refresh_hooks(root: QWidget) -> None:
