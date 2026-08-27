@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from PySide6.QtWidgets import QMessageBox
+
 from school_timetable_solver.service.project_services import (
     CreateProjectService,
     DeleteProjectService,
@@ -7,6 +9,7 @@ from school_timetable_solver.service.project_services import (
     ExecuteProjectService,
     ImportProjectService,
     ListProjectsService,
+    LoadProjectInputService,
     LoadProjectService,
     UpdateProjectMetadataService,
 )
@@ -22,6 +25,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         self,
         list_projects: ListProjectsService,
         load_project: LoadProjectService,
+        load_project_input: LoadProjectInputService,
         create_project: CreateProjectService,
         import_project: ImportProjectService,
         update_project: UpdateProjectMetadataService,
@@ -29,6 +33,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         delete_project: DeleteProjectService,
         execute_project: ExecuteProjectService,
     ) -> None:
+        self._load_project_input = load_project_input
         super().__init__(
             list_projects=list_projects,
             load_project=load_project,
@@ -50,3 +55,27 @@ class SeasonalDesktopWindow(DesktopWindow):
         self._editor = editor
         self._stack.addWidget(editor)
         self.resize(1180, 780)
+
+    def _create_new_project(self) -> None:
+        project = self._create_project.execute()
+        self._seasonal_editor().load_project(project, None)
+        self._stack.setCurrentWidget(self._editor)
+
+    def _open_project(self, project_id: str) -> None:
+        project = self._load_project.execute(project_id)
+        if project is None:
+            QMessageBox.warning(self, "読込エラー", "保存済みデータが見つかりません。")
+            self._refresh_home()
+            return
+        try:
+            read_result = self._load_project_input.execute(project_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "読込エラー", str(exc))
+            return
+        self._seasonal_editor().load_project(project, read_result.input_data)
+        self._stack.setCurrentWidget(self._editor)
+
+    def _seasonal_editor(self) -> SeasonalEditorWorkspace:
+        if not isinstance(self._editor, SeasonalEditorWorkspace):
+            raise RuntimeError("seasonal editor is not initialized")
+        return self._editor
