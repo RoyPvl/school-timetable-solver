@@ -11,6 +11,7 @@ from school_timetable_solver.service.project_services import (
     UpdateProjectMetadataService,
 )
 from school_timetable_solver.ui.desktop_window import DesktopWindow
+from school_timetable_solver.ui.editor_theme import DARK_EDITOR_STYLE
 from school_timetable_solver.ui.editor_workspace import SeasonalEditorWorkspace
 
 
@@ -44,6 +45,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         previous_editor.deleteLater()
 
         editor = SeasonalEditorWorkspace()
+        editor.setStyleSheet(DARK_EDITOR_STYLE)
         editor.back_requested.connect(self._show_home)
         self._editor = editor
         self._stack.addWidget(editor)
