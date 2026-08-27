@@ -16,17 +16,17 @@ from school_timetable_solver.service.project_services import (
     LoadProjectService,
     UpdateProjectMetadataService,
 )
-from school_timetable_solver.ui.desktop_window import DesktopWindow
+from school_timetable_solver.ui.seasonal_desktop_window import SeasonalDesktopWindow
 
 
 class DesktopApplicationComposition:
     """Create the desktop application with local persistence."""
 
-    def create_desktop_window(self, data_directory: Path) -> DesktopWindow:
+    def create_desktop_window(self, data_directory: Path) -> SeasonalDesktopWindow:
         project_store = LocalProjectStoreAdapter(data_directory)
         project_store.initialize()
         generator = ApplicationComposition().create_generate_timetable_service()
-        return DesktopWindow(
+        return SeasonalDesktopWindow(
             list_projects=ListProjectsService(project_store),
             load_project=LoadProjectService(project_store),
             create_project=CreateProjectService(project_store),
