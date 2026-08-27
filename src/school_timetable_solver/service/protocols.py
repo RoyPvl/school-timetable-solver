@@ -6,6 +6,8 @@ from typing import Protocol
 
 from school_timetable_solver.model.project_models import ProjectModel
 from school_timetable_solver.model.result_models import (
+    GenerationRequestModel,
+    GenerationResultModel,
     InputReadResultModel,
     TimetableDocumentModel,
 )
@@ -17,6 +19,14 @@ class InputReader(Protocol):
 
 class TimetableWriter(Protocol):
     def write(self, document: TimetableDocumentModel, path: Path) -> None: ...
+
+
+class TimetableGenerator(Protocol):
+    def execute(self, request: GenerationRequestModel) -> GenerationResultModel: ...
+
+
+class ExecutionLogger(Protocol):
+    def configure(self, path: Path | None) -> None: ...
 
 
 class ProjectStore(Protocol):
