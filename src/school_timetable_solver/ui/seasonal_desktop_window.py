@@ -14,6 +14,7 @@ from school_timetable_solver.service.project_services import (
     UpdateProjectMetadataService,
 )
 from school_timetable_solver.ui.desktop_window import DesktopWindow
+from school_timetable_solver.ui.editor_presentation import apply_editor_presentation
 from school_timetable_solver.ui.editor_theme import DARK_EDITOR_STYLE
 from school_timetable_solver.ui.editor_workspace import SeasonalEditorWorkspace
 
@@ -58,7 +59,9 @@ class SeasonalDesktopWindow(DesktopWindow):
 
     def _create_new_project(self) -> None:
         project = self._create_project.execute()
-        self._seasonal_editor().load_project(project, None)
+        editor = self._seasonal_editor()
+        editor.load_project(project, None)
+        apply_editor_presentation(editor)
         self._stack.setCurrentWidget(self._editor)
 
     def _open_project(self, project_id: str) -> None:
@@ -72,7 +75,9 @@ class SeasonalDesktopWindow(DesktopWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "読込エラー", str(exc))
             return
-        self._seasonal_editor().load_project(project, read_result.input_data)
+        editor = self._seasonal_editor()
+        editor.load_project(project, read_result.input_data)
+        apply_editor_presentation(editor)
         self._stack.setCurrentWidget(self._editor)
 
     def _seasonal_editor(self) -> SeasonalEditorWorkspace:
