@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from school_timetable_solver.adapter.project_store_adapter import LocalProjectStoreAdapter
@@ -27,7 +27,7 @@ def _project(
 def test_project_store_persists_lists_updates_and_deletes(tmp_path: Path) -> None:
     store = LocalProjectStoreAdapter(tmp_path)
     store.initialize()
-    now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 27, tzinfo=UTC)
 
     first = store.create(_project("p1", "first", ProjectSource.BLANK, now))
     second = store.create(
@@ -58,7 +58,7 @@ def test_project_store_copies_imported_workbook_into_app_data(tmp_path: Path) ->
     store.initialize()
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
-    now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 27, tzinfo=UTC)
 
     stored = store.create(
         _project("imported", "imported", ProjectSource.EXCEL_IMPORT, now),
