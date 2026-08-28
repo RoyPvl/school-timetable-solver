@@ -208,6 +208,13 @@ QDoubleSpinBox {
     padding: 6px 8px;
     selection-background-color: #2f5689;
 }
+QLineEdit#tableTextInput {
+    background: #15191e;
+    border: 1px solid #53606e;
+    border-radius: 4px;
+    margin: 2px 3px;
+    padding: 4px 7px;
+}
 QLineEdit:focus,
 QPlainTextEdit:focus,
 QComboBox:focus,
@@ -217,10 +224,32 @@ QSpinBox:focus,
 QDoubleSpinBox:focus {
     border: 1px solid #6a94c8;
 }
-QComboBox::drop-down,
+QComboBox[selectionField="true"] {
+    padding-right: 34px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 28px;
+    background: #252b33;
+    border: 0;
+    border-left: 1px solid #46505d;
+    border-top-right-radius: 5px;
+    border-bottom-right-radius: 5px;
+}
+QComboBox::down-arrow {
+    image: none;
+}
 QDateEdit::drop-down {
     border: 0;
     width: 24px;
+}
+QLabel#comboChevron {
+    background: transparent;
+    color: #dfe5ed;
+    border: 0;
+    font-size: 16px;
+    font-weight: 600;
 }
 QComboBox QAbstractItemView {
     background: #20252c;
