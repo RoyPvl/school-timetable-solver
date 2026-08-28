@@ -14,7 +14,10 @@ from school_timetable_solver.service.project_services import (
     UpdateProjectMetadataService,
 )
 from school_timetable_solver.ui.desktop_window import DesktopWindow
-from school_timetable_solver.ui.editor_input_affordance import apply_input_affordances
+from school_timetable_solver.ui.editor_input_affordance import (
+    apply_input_affordances,
+    prepare_master_active_rows,
+)
 from school_timetable_solver.ui.editor_presentation import apply_editor_presentation
 from school_timetable_solver.ui.editor_theme import DARK_EDITOR_STYLE
 from school_timetable_solver.ui.editor_workspace import SeasonalEditorWorkspace
@@ -83,6 +86,7 @@ class SeasonalDesktopWindow(DesktopWindow):
 
     @staticmethod
     def _apply_editor_ui(editor: SeasonalEditorWorkspace) -> None:
+        prepare_master_active_rows(editor)
         apply_editor_presentation(editor)
         apply_input_affordances(editor)
 
