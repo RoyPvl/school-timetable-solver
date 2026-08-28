@@ -1,7 +1,15 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtWidgets import QComboBox, QLabel, QLineEdit, QTableWidget, QWidget
+from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDateEdit,
+    QLabel,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QWidget,
+)
 
 _TABLE_ROW_HEIGHT = 38
 _MASTER_ENABLED_TABLES = (
@@ -49,6 +57,43 @@ class _ComboChevronController(QObject):
         self._chevron.raise_()
 
 
+class _CalendarIndicatorController(QObject):
+    """Keep a calendar marker visible over the QDateEdit popup area."""
+
+    def __init__(self, date_edit: QDateEdit) -> None:
+        super().__init__(date_edit)
+        self._date_edit = date_edit
+        self._indicator = QLabel("📅", date_edit)
+        self._indicator.setObjectName("calendarIndicator")
+        self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._indicator.setToolTip("カレンダーから選択")
+        self._indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._indicator.setFixedWidth(24)
+        date_edit.installEventFilter(self)
+        self._reposition()
+        self._indicator.show()
+        self._indicator.raise_()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._date_edit and event.type() in {
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.StyleChange,
+        }:
+            QTimer.singleShot(0, self._reposition)
+        return False
+
+    def _reposition(self) -> None:
+        height = self._date_edit.height()
+        self._indicator.setGeometry(
+            max(0, self._date_edit.width() - self._indicator.width()),
+            0,
+            self._indicator.width(),
+            height,
+        )
+        self._indicator.raise_()
+
+
 def prepare_master_active_rows(root: QWidget) -> None:
     """Discard disabled imported master rows before dependency choices are built."""
     for table in root.findChildren(QTableWidget):
@@ -67,10 +112,13 @@ def apply_input_affordances(root: QWidget) -> None:
     for table in root.findChildren(QTableWidget):
         _remove_master_enabled_column(table)
         _normalize_table_row_height(table)
+        _show_date_inputs(table)
         _show_text_inputs(table)
 
     for combo in root.findChildren(QComboBox):
         _show_selection_affordance(combo)
+    for date_edit in root.findChildren(QDateEdit):
+        _show_calendar_affordance(date_edit)
 
 
 def _remove_master_enabled_column(table: QTableWidget) -> None:
@@ -106,6 +154,8 @@ def _cell_text(table: QTableWidget, row: int, column: int) -> str:
     widget = table.cellWidget(row, column)
     if isinstance(widget, QComboBox):
         return widget.currentText()
+    if isinstance(widget, QDateEdit):
+        return widget.date().toString("yyyy/MM/dd")
     item = table.item(row, column)
     return item.text() if item is not None else ""
 
@@ -121,6 +171,47 @@ def _normalize_table_row_height(table: QTableWidget) -> None:
     header.setDefaultSectionSize(_TABLE_ROW_HEIGHT)
     for row in range(table.rowCount()):
         table.setRowHeight(row, _TABLE_ROW_HEIGHT)
+
+
+def _show_date_inputs(table: QTableWidget) -> None:
+    date_column = _column_index(table, "日付")
+    if date_column is None:
+        return
+
+    for row in range(table.rowCount()):
+        existing = table.cellWidget(row, date_column)
+        if isinstance(existing, QDateEdit):
+            continue
+
+        item = table.item(row, date_column)
+        if item is None:
+            item = QTableWidgetItem("")
+            table.setItem(row, date_column, item)
+        parsed = _parse_date(item.text())
+        if not parsed.isValid():
+            continue
+
+        editor = QDateEdit(table)
+        editor.setObjectName("tableDateInput")
+        editor.setCalendarPopup(True)
+        editor.setDisplayFormat("yyyy/MM/dd")
+        editor.setDate(parsed)
+        line_edit = editor.lineEdit()
+        if line_edit is not None:
+            line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.dateChanged.connect(
+            lambda selected, cell=item: cell.setText(selected.toString("yyyy/MM/dd"))
+        )
+        table.setCellWidget(row, date_column, editor)
+
+
+def _parse_date(value: str) -> QDate:
+    text = value.strip()
+    for display_format in ("yyyy/MM/dd", "yyyy-M-d", "yyyy-MM-dd", "M/d"):
+        parsed = QDate.fromString(text, display_format)
+        if parsed.isValid():
+            return parsed
+    return QDate()
 
 
 def _show_text_inputs(table: QTableWidget) -> None:
@@ -146,3 +237,13 @@ def _show_selection_affordance(combo: QComboBox) -> None:
     controller = _ComboChevronController(combo)
     combo.setProperty("chevronController", controller)
     combo.setProperty("chevronControllerInstalled", True)
+
+
+def _show_calendar_affordance(date_edit: QDateEdit) -> None:
+    date_edit.setCalendarPopup(True)
+    date_edit.setProperty("calendarField", True)
+    if date_edit.property("calendarIndicatorControllerInstalled"):
+        return
+    controller = _CalendarIndicatorController(date_edit)
+    date_edit.setProperty("calendarIndicatorController", controller)
+    date_edit.setProperty("calendarIndicatorControllerInstalled", True)
