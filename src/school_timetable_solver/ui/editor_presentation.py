@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 _DIVISION_CHOICES = ("小学", "中学", "高校", "その他")
 _EXAM_CATEGORY_CHOICES = ("受験", "非受験", "特別", "その他")
+_ENABLED_CHOICES = ("✓", "—")
 
 _DIVISION_LABELS = {
     "小学": "小学",
@@ -65,6 +66,27 @@ _EXAM_CATEGORY_LABELS = {
     "other": "その他",
     "others": "その他",
     "": "その他",
+}
+
+_ENABLED_LABELS = {
+    "✓": "✓",
+    "true": "✓",
+    "1": "✓",
+    "yes": "✓",
+    "on": "✓",
+    "enabled": "✓",
+    "有効": "✓",
+    "○": "✓",
+    "—": "—",
+    "-": "—",
+    "false": "—",
+    "0": "—",
+    "no": "—",
+    "off": "—",
+    "disabled": "—",
+    "無効": "—",
+    "×": "—",
+    "": "—",
 }
 
 
@@ -220,6 +242,13 @@ def _apply_dependency_choices(root: QWidget) -> None:
 
     for table in tables:
         headers = _table_headers(table)
+        if "有効" in headers:
+            _configure_choice_column(
+                table,
+                "有効",
+                _ENABLED_CHOICES,
+                normalize_current=_normalize_enabled,
+            )
         if (
             "クラス" in headers
             and "担任" in headers
@@ -372,6 +401,10 @@ def _normalize_division(value: str) -> str:
 
 def _normalize_exam_category(value: str) -> str:
     return _EXAM_CATEGORY_LABELS.get(_normalized_token(value), "その他")
+
+
+def _normalize_enabled(value: str) -> str:
+    return _ENABLED_LABELS.get(_normalized_token(value), "—")
 
 
 def _normalized_token(value: str) -> str:
