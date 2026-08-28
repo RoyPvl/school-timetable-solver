@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QModelIndex, QPointF, Qt, QTimer
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -11,6 +12,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -88,6 +92,58 @@ _ENABLED_LABELS = {
 }
 
 
+class _ComboSelectionDelegate(QStyledItemDelegate):
+    """Render the current combo item with a neutral circle instead of a checkmark."""
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo.view())
+        self._combo = combo
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        painter.save()
+        highlighted = bool(
+            option.state
+            & (QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver)
+        )
+        background = (
+            option.palette.highlight().color()
+            if highlighted
+            else option.palette.base().color()
+        )
+        text_color = (
+            option.palette.highlightedText().color()
+            if highlighted
+            else option.palette.text().color()
+        )
+        painter.fillRect(option.rect, background)
+        painter.setPen(text_color)
+        text_rect = option.rect.adjusted(26, 0, -8, 0)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            text,
+        )
+
+        if index.row() == self._combo.currentIndex():
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            circle_color = (
+                option.palette.highlightedText().color()
+                if highlighted
+                else option.palette.text().color()
+            )
+            painter.setPen(circle_color)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            center = QPointF(option.rect.left() + 13, option.rect.center().y())
+            painter.drawEllipse(center, 4.0, 4.0)
+        painter.restore()
+
+
 def apply_editor_presentation(root: QWidget) -> None:
     """Apply the current human-in-the-loop presentation rules to the editor."""
     if root.property("presentationApplying"):
@@ -98,6 +154,7 @@ def apply_editor_presentation(root: QWidget) -> None:
             _polish_table(table)
         _ensure_campus_master(root)
         _apply_dependency_choices(root)
+        _install_combo_selection_delegates(root)
         _compact_teacher_load_cards(root)
         _install_dynamic_refresh_hooks(root)
     finally:
@@ -268,6 +325,15 @@ def _apply_dependency_choices(root: QWidget) -> None:
             and "必要休日日数" in headers
         ):
             _configure_choice_column(table, "教師", teacher_choices)
+
+
+def _install_combo_selection_delegates(root: QWidget) -> None:
+    for combo in root.findChildren(QComboBox):
+        view = combo.view()
+        if view.property("circleSelectionDelegateInstalled"):
+            continue
+        view.setItemDelegate(_ComboSelectionDelegate(combo))
+        view.setProperty("circleSelectionDelegateInstalled", True)
 
 
 def _find_table(
