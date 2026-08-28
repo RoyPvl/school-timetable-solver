@@ -4,6 +4,13 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtWidgets import QComboBox, QLabel, QLineEdit, QTableWidget, QWidget
 
 _TABLE_ROW_HEIGHT = 38
+_MASTER_ENABLED_TABLES = (
+    frozenset(("校舎", "教室", "優先度", "有効")),
+    frozenset(("教師", "所属校舎", "有効")),
+    frozenset(("クラス", "校舎", "学部", "学年", "受験区分", "担任", "有効")),
+    frozenset(("教科", "授業種別", "有効")),
+)
+_DISABLED_LABELS = frozenset(("—", "-", "false", "0", "no", "off", "disabled", "無効"))
 
 
 class _ComboChevronController(QObject):
@@ -42,14 +49,70 @@ class _ComboChevronController(QObject):
         self._chevron.raise_()
 
 
+def prepare_master_active_rows(root: QWidget) -> None:
+    """Discard disabled imported master rows before dependency choices are built."""
+    for table in root.findChildren(QTableWidget):
+        if not _is_master_enabled_table(table):
+            continue
+        enabled_column = _column_index(table, "有効")
+        if enabled_column is None:
+            continue
+        for row in reversed(range(table.rowCount())):
+            if _is_disabled(_cell_text(table, row, enabled_column)):
+                table.removeRow(row)
+
+
 def apply_input_affordances(root: QWidget) -> None:
     """Make editable text and selection controls visually explicit."""
     for table in root.findChildren(QTableWidget):
+        _remove_master_enabled_column(table)
         _normalize_table_row_height(table)
         _show_text_inputs(table)
 
     for combo in root.findChildren(QComboBox):
         _show_selection_affordance(combo)
+
+
+def _remove_master_enabled_column(table: QTableWidget) -> None:
+    if not _is_master_enabled_table(table):
+        return
+    enabled_column = _column_index(table, "有効")
+    if enabled_column is not None:
+        table.removeColumn(enabled_column)
+
+
+def _is_master_enabled_table(table: QTableWidget) -> bool:
+    headers = frozenset(_table_headers(table))
+    return any(required.issubset(headers) for required in _MASTER_ENABLED_TABLES)
+
+
+def _table_headers(table: QTableWidget) -> tuple[str, ...]:
+    return tuple(
+        item.text() if item is not None else ""
+        for item in (
+            table.horizontalHeaderItem(column) for column in range(table.columnCount())
+        )
+    )
+
+
+def _column_index(table: QTableWidget, header: str) -> int | None:
+    for column, current in enumerate(_table_headers(table)):
+        if current == header:
+            return column
+    return None
+
+
+def _cell_text(table: QTableWidget, row: int, column: int) -> str:
+    widget = table.cellWidget(row, column)
+    if isinstance(widget, QComboBox):
+        return widget.currentText()
+    item = table.item(row, column)
+    return item.text() if item is not None else ""
+
+
+def _is_disabled(value: str) -> bool:
+    normalized = value.strip().casefold()
+    return normalized in _DISABLED_LABELS or not normalized
 
 
 def _normalize_table_row_height(table: QTableWidget) -> None:
