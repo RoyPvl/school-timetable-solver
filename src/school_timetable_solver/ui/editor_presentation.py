@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import QModelIndex, QPointF, Qt, QTimer
+from PySide6.QtCore import QModelIndex, QPointF, QTime, Qt, QTimer
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateTimeEdit,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -17,12 +18,14 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
 
 _DIVISION_CHOICES = ("小学", "中学", "高校", "その他")
 _EXAM_CATEGORY_CHOICES = ("受験", "非受験", "特別", "その他")
+_LESSON_TYPE_CHOICES = ("通常", "特別", "その他")
 _ENABLED_CHOICES = ("✓", "—")
 
 _DIVISION_LABELS = {
@@ -69,6 +72,23 @@ _EXAM_CATEGORY_LABELS = {
     "null": "その他",
     "other": "その他",
     "others": "その他",
+    "": "その他",
+}
+
+_LESSON_TYPE_LABELS = {
+    "通常": "通常",
+    "normal": "通常",
+    "regular": "通常",
+    "standard": "通常",
+    "general": "通常",
+    "通常授業": "通常",
+    "特別": "特別",
+    "special": "特別",
+    "特別授業": "特別",
+    "その他": "その他",
+    "other": "その他",
+    "others": "その他",
+    "none": "その他",
     "": "その他",
 }
 
@@ -144,6 +164,31 @@ class _ComboSelectionDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class _FiveMinuteTimeEdit(QTimeEdit):
+    """Time selector that keeps user input aligned to five-minute boundaries."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDisplayFormat("HH:mm")
+        self.setWrapping(True)
+        line_edit = self.lineEdit()
+        if line_edit is not None:
+            line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.editingFinished.connect(self._snap_to_five_minutes)
+
+    def stepBy(self, steps: int) -> None:
+        if self.currentSection() is QDateTimeEdit.Section.HourSection:
+            self.setTime(self.time().addSecs(steps * 60 * 60))
+            return
+        self.setTime(self.time().addSecs(steps * 5 * 60))
+
+    def _snap_to_five_minutes(self) -> None:
+        current = self.time()
+        minutes = current.hour() * 60 + current.minute()
+        rounded_minutes = ((minutes + 2) // 5 * 5) % (24 * 60)
+        self.setTime(QTime(rounded_minutes // 60, rounded_minutes % 60))
+
+
 def apply_editor_presentation(root: QWidget) -> None:
     """Apply the current human-in-the-loop presentation rules to the editor."""
     if root.property("presentationApplying"):
@@ -154,6 +199,7 @@ def apply_editor_presentation(root: QWidget) -> None:
             _polish_table(table)
         _ensure_campus_master(root)
         _apply_dependency_choices(root)
+        _apply_time_selectors(root)
         _install_combo_selection_delegates(root)
         _compact_teacher_load_cards(root)
         _install_dynamic_refresh_hooks(root)
@@ -291,8 +337,8 @@ def _apply_dependency_choices(root: QWidget) -> None:
         _configure_choice_column(
             subject_table,
             "授業種別",
-            _column_values(subject_table, "授業種別"),
-            editable=True,
+            _LESSON_TYPE_CHOICES,
+            normalize_current=_normalize_lesson_type,
         )
 
     for table in tables:
@@ -325,6 +371,43 @@ def _apply_dependency_choices(root: QWidget) -> None:
             and "必要休日日数" in headers
         ):
             _configure_choice_column(table, "教師", teacher_choices)
+
+
+def _apply_time_selectors(root: QWidget) -> None:
+    period_table = _find_table(root.findChildren(QTableWidget), ("時限", "開始", "終了"))
+    if period_table is None:
+        return
+    _configure_time_column(period_table, "開始")
+    _configure_time_column(period_table, "終了")
+
+
+def _configure_time_column(table: QTableWidget, header: str) -> None:
+    column = _column_index(table, header)
+    if column is None:
+        return
+    for row in range(table.rowCount()):
+        _set_time_cell(table, row, column)
+
+
+def _set_time_cell(table: QTableWidget, row: int, column: int) -> None:
+    existing = table.cellWidget(row, column)
+    if isinstance(existing, _FiveMinuteTimeEdit):
+        return
+
+    current = _cell_text(table, row, column).strip()
+    selector = _FiveMinuteTimeEdit(table)
+    parsed = _parse_time(current)
+    if parsed.isValid():
+        selector.setTime(parsed)
+    table.setCellWidget(row, column, selector)
+
+
+def _parse_time(value: str) -> QTime:
+    for display_format in ("HH:mm", "H:mm", "HH:mm:ss", "H:mm:ss"):
+        parsed = QTime.fromString(value, display_format)
+        if parsed.isValid():
+            return parsed
+    return QTime()
 
 
 def _install_combo_selection_delegates(root: QWidget) -> None:
@@ -379,6 +462,8 @@ def _cell_text(table: QTableWidget, row: int, column: int) -> str:
     widget = table.cellWidget(row, column)
     if isinstance(widget, QComboBox):
         return widget.currentText()
+    if isinstance(widget, QTimeEdit):
+        return widget.time().toString("HH:mm")
     item = table.item(row, column)
     return item.text() if item is not None else ""
 
@@ -465,6 +550,10 @@ def _normalize_division(value: str) -> str:
 
 def _normalize_exam_category(value: str) -> str:
     return _EXAM_CATEGORY_LABELS.get(_normalized_token(value), "その他")
+
+
+def _normalize_lesson_type(value: str) -> str:
+    return _LESSON_TYPE_LABELS.get(_normalized_token(value), "その他")
 
 
 def _normalize_enabled(value: str) -> str:
