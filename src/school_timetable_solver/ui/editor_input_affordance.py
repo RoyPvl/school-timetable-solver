@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QLocale, QObject, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 _TABLE_ROW_HEIGHT = 38
+_DATE_DISPLAY_FORMAT = "yyyy/MM/dd (ddd)"
+_JAPANESE_LOCALE = QLocale(QLocale.Language.Japanese, QLocale.Country.Japan)
 _MASTER_ENABLED_TABLES = (
     frozenset(("校舎", "教室", "優先度", "有効")),
     frozenset(("教師", "所属校舎", "有効")),
@@ -111,6 +113,7 @@ def apply_input_affordances(root: QWidget) -> None:
     """Make editable text and selection controls visually explicit."""
     for table in root.findChildren(QTableWidget):
         _remove_master_enabled_column(table)
+        _remove_weekday_column(table)
         _normalize_table_row_height(table)
         _show_date_inputs(table)
         _show_text_inputs(table)
@@ -127,6 +130,13 @@ def _remove_master_enabled_column(table: QTableWidget) -> None:
     enabled_column = _column_index(table, "有効")
     if enabled_column is not None:
         table.removeColumn(enabled_column)
+
+
+def _remove_weekday_column(table: QTableWidget) -> None:
+    for header in ("曜", "曜日"):
+        weekday_column = _column_index(table, header)
+        if weekday_column is not None:
+            table.removeColumn(weekday_column)
 
 
 def _is_master_enabled_table(table: QTableWidget) -> bool:
@@ -194,7 +204,8 @@ def _show_date_inputs(table: QTableWidget) -> None:
         editor = QDateEdit(table)
         editor.setObjectName("tableDateInput")
         editor.setCalendarPopup(True)
-        editor.setDisplayFormat("yyyy/MM/dd")
+        editor.setLocale(_JAPANESE_LOCALE)
+        editor.setDisplayFormat(_DATE_DISPLAY_FORMAT)
         editor.setDate(parsed)
         line_edit = editor.lineEdit()
         if line_edit is not None:
@@ -241,6 +252,9 @@ def _show_selection_affordance(combo: QComboBox) -> None:
 
 def _show_calendar_affordance(date_edit: QDateEdit) -> None:
     date_edit.setCalendarPopup(True)
+    date_edit.setLocale(_JAPANESE_LOCALE)
+    date_edit.setDisplayFormat(_DATE_DISPLAY_FORMAT)
+    date_edit.setMinimumWidth(150)
     date_edit.setProperty("calendarField", True)
     if date_edit.property("calendarIndicatorControllerInstalled"):
         return
