@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QEvent, QLocale, QObject, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QModelIndex, QPointF, QLocale, QObject, Qt, QTimer
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QWidget,
@@ -14,6 +19,9 @@ from PySide6.QtWidgets import (
 _TABLE_ROW_HEIGHT = 38
 _DATE_DISPLAY_FORMAT = "yyyy/MM/dd (ddd)"
 _JAPANESE_LOCALE = QLocale(QLocale.Language.Japanese, QLocale.Country.Japan)
+_SCHEDULE_DATE_WIDTH = 190
+_SCHEDULE_PERIOD_WIDTH = 58
+_SCHEDULE_PERIOD_CHOICES = ("✓", "—")
 _MASTER_ENABLED_TABLES = (
     frozenset(("校舎", "教室", "優先度", "有効")),
     frozenset(("教師", "所属校舎", "有効")),
@@ -21,6 +29,7 @@ _MASTER_ENABLED_TABLES = (
     frozenset(("教科", "授業種別", "有効")),
 )
 _DISABLED_LABELS = frozenset(("—", "-", "false", "0", "no", "off", "disabled", "無効"))
+_ENABLED_LABELS = frozenset(("✓", "true", "1", "yes", "on", "enabled", "有効", "○"))
 
 
 class _ComboChevronController(QObject):
@@ -96,6 +105,51 @@ class _CalendarIndicatorController(QObject):
         self._indicator.raise_()
 
 
+class _ChoiceSelectionDelegate(QStyledItemDelegate):
+    """Render the current choice with a neutral circle instead of a checkmark."""
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo.view())
+        self._combo = combo
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        painter.save()
+        highlighted = bool(
+            option.state
+            & (QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver)
+        )
+        background = (
+            option.palette.highlight().color()
+            if highlighted
+            else option.palette.base().color()
+        )
+        text_color = (
+            option.palette.highlightedText().color()
+            if highlighted
+            else option.palette.text().color()
+        )
+        painter.fillRect(option.rect, background)
+        painter.setPen(text_color)
+        painter.drawText(
+            option.rect.adjusted(26, 0, -8, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            str(index.data(Qt.ItemDataRole.DisplayRole) or ""),
+        )
+
+        if index.row() == self._combo.currentIndex():
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(text_color)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            center = QPointF(option.rect.left() + 13, option.rect.center().y())
+            painter.drawEllipse(center, 4.0, 4.0)
+        painter.restore()
+
+
 def prepare_master_active_rows(root: QWidget) -> None:
     """Discard disabled imported master rows before dependency choices are built."""
     for table in root.findChildren(QTableWidget):
@@ -115,8 +169,10 @@ def apply_input_affordances(root: QWidget) -> None:
         _remove_master_enabled_column(table)
         _remove_weekday_column(table)
         _normalize_table_row_height(table)
+        _show_schedule_period_inputs(table)
         _show_date_inputs(table)
         _show_text_inputs(table)
+        _configure_schedule_column_widths(table)
 
     for combo in root.findChildren(QComboBox):
         _show_selection_affordance(combo)
@@ -142,6 +198,11 @@ def _remove_weekday_column(table: QTableWidget) -> None:
 def _is_master_enabled_table(table: QTableWidget) -> bool:
     headers = frozenset(_table_headers(table))
     return any(required.issubset(headers) for required in _MASTER_ENABLED_TABLES)
+
+
+def _is_schedule_table(table: QTableWidget) -> bool:
+    headers = set(_table_headers(table))
+    return "日付" in headers and "備考" in headers
 
 
 def _table_headers(table: QTableWidget) -> tuple[str, ...]:
@@ -181,6 +242,42 @@ def _normalize_table_row_height(table: QTableWidget) -> None:
     header.setDefaultSectionSize(_TABLE_ROW_HEIGHT)
     for row in range(table.rowCount()):
         table.setRowHeight(row, _TABLE_ROW_HEIGHT)
+
+
+def _show_schedule_period_inputs(table: QTableWidget) -> None:
+    if not _is_schedule_table(table):
+        return
+
+    period_columns = tuple(
+        column
+        for column, header in enumerate(_table_headers(table))
+        if header not in {"日付", "備考"}
+    )
+    for row in range(table.rowCount()):
+        for column in period_columns:
+            existing = table.cellWidget(row, column)
+            if isinstance(existing, QComboBox):
+                continue
+
+            item = table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem("—")
+                table.setItem(row, column, item)
+            current = _normalize_period_choice(item.text())
+            item.setText(current)
+
+            combo = QComboBox(table)
+            combo.setObjectName("schedulePeriodChoice")
+            combo.addItems(_SCHEDULE_PERIOD_CHOICES)
+            combo.setCurrentText(current)
+            combo.currentTextChanged.connect(item.setText)
+            combo.view().setItemDelegate(_ChoiceSelectionDelegate(combo))
+            table.setCellWidget(row, column, combo)
+
+
+def _normalize_period_choice(value: str) -> str:
+    normalized = value.strip().casefold()
+    return "✓" if normalized in _ENABLED_LABELS else "—"
 
 
 def _show_date_inputs(table: QTableWidget) -> None:
@@ -239,6 +336,23 @@ def _show_text_inputs(table: QTableWidget) -> None:
             editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
             editor.textChanged.connect(item.setText)
             table.setCellWidget(row, column, editor)
+
+
+def _configure_schedule_column_widths(table: QTableWidget) -> None:
+    if not _is_schedule_table(table):
+        return
+
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    for column, label in enumerate(_table_headers(table)):
+        if label == "日付":
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            table.setColumnWidth(column, _SCHEDULE_DATE_WIDTH)
+        elif label == "備考":
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+        else:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            table.setColumnWidth(column, _SCHEDULE_PERIOD_WIDTH)
 
 
 def _show_selection_affordance(combo: QComboBox) -> None:
