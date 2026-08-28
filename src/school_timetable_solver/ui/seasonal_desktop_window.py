@@ -14,6 +14,7 @@ from school_timetable_solver.service.project_services import (
     UpdateProjectMetadataService,
 )
 from school_timetable_solver.ui.desktop_window import DesktopWindow
+from school_timetable_solver.ui.editor_input_affordance import apply_input_affordances
 from school_timetable_solver.ui.editor_presentation import apply_editor_presentation
 from school_timetable_solver.ui.editor_theme import DARK_EDITOR_STYLE
 from school_timetable_solver.ui.editor_workspace import SeasonalEditorWorkspace
@@ -61,7 +62,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         project = self._create_project.execute()
         editor = self._seasonal_editor()
         editor.load_project(project, None)
-        apply_editor_presentation(editor)
+        self._apply_editor_ui(editor)
         self._stack.setCurrentWidget(self._editor)
 
     def _open_project(self, project_id: str) -> None:
@@ -77,8 +78,13 @@ class SeasonalDesktopWindow(DesktopWindow):
             return
         editor = self._seasonal_editor()
         editor.load_project(project, read_result.input_data)
-        apply_editor_presentation(editor)
+        self._apply_editor_ui(editor)
         self._stack.setCurrentWidget(self._editor)
+
+    @staticmethod
+    def _apply_editor_ui(editor: SeasonalEditorWorkspace) -> None:
+        apply_editor_presentation(editor)
+        apply_input_affordances(editor)
 
     def _seasonal_editor(self) -> SeasonalEditorWorkspace:
         if not isinstance(self._editor, SeasonalEditorWorkspace):
