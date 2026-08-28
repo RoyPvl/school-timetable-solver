@@ -8,8 +8,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -22,6 +26,7 @@ def apply_editor_presentation(root: QWidget) -> None:
     try:
         for table in root.findChildren(QTableWidget):
             _polish_table(table)
+        _ensure_campus_master(root)
         _apply_dependency_choices(root)
         _compact_teacher_load_cards(root)
         _install_dynamic_refresh_hooks(root)
@@ -68,26 +73,73 @@ def _remove_header_column(table: QTableWidget, header: str) -> None:
             table.removeColumn(column)
 
 
+def _ensure_campus_master(root: QWidget) -> None:
+    if root.property("campusMasterCreated"):
+        return
+
+    tables = root.findChildren(QTableWidget)
+    room_table = _find_table(tables, ("校舎", "教室", "優先度", "有効"))
+    if room_table is None:
+        return
+
+    tab = room_table.parentWidget()
+    if tab is None or not isinstance(tab.layout(), QVBoxLayout):
+        return
+
+    campus_names = _column_values(room_table, "校舎")
+
+    group = QGroupBox("校舎")
+    group.setObjectName("campusMasterGroup")
+    group_layout = QVBoxLayout(group)
+
+    actions = QHBoxLayout()
+    add_button = QPushButton("+ 校舎を追加")
+    actions.addWidget(add_button)
+    actions.addStretch(1)
+    group_layout.addLayout(actions)
+
+    campus_table = QTableWidget(len(campus_names), 1)
+    campus_table.setObjectName("campusMasterTable")
+    campus_table.setHorizontalHeaderLabels(("校舎名",))
+    campus_table.horizontalHeader().setStretchLastSection(True)
+    for row, campus_name in enumerate(campus_names):
+        campus_table.setItem(row, 0, QTableWidgetItem(campus_name))
+    campus_table.setMinimumHeight(max(150, 82 + max(len(campus_names), 2) * 27))
+    group_layout.addWidget(campus_table)
+
+    tab_layout = tab.layout()
+    assert isinstance(tab_layout, QVBoxLayout)
+    tab_layout.insertWidget(1, group)
+
+    add_button.clicked.connect(lambda _checked=False, table=campus_table: _append_row(table))
+    root.setProperty("campusMasterCreated", True)
+    _polish_table(campus_table)
+
+
+def _append_row(table: QTableWidget) -> None:
+    row = table.rowCount()
+    table.insertRow(row)
+    table.setItem(row, 0, QTableWidgetItem(""))
+    _polish_table(table)
+    table.setCurrentCell(row, 0)
+    table.editItem(table.item(row, 0))
+
+
 def _apply_dependency_choices(root: QWidget) -> None:
     tables = root.findChildren(QTableWidget)
-    room_table = _find_table(tables, ("校舎", "教室"))
+    campus_master = _find_table(tables, ("校舎名",))
+    room_table = _find_table(tables, ("校舎", "教室", "優先度", "有効"))
     teacher_table = _find_table(tables, ("教師", "所属校舎"))
     class_table = _find_table(tables, ("クラス", "校舎", "学部", "担任"))
     subject_table = _find_table(tables, ("教科", "授業種別"))
 
-    campus_choices = _column_values(room_table, "校舎") if room_table else ()
+    # Campus names are defined only in the campus master. Every campus reference in
+    # the editor must be a strict selection from this source.
+    campus_choices = _column_values(campus_master, "校舎名") if campus_master else ()
     teacher_choices = _column_values(teacher_table, "教師") if teacher_table else ()
 
-    # The campus column in the campus/room master is the source of the campus choices.
-    # It stays editable so a new campus name can be entered, while dependent campus
-    # references are strict selections from the resulting list.
     if room_table is not None:
-        _configure_choice_column(
-            room_table,
-            "校舎",
-            campus_choices,
-            editable=True,
-        )
+        _configure_choice_column(room_table, "校舎", campus_choices)
 
     if teacher_table is not None:
         _configure_choice_column(teacher_table, "所属校舎", campus_choices)
