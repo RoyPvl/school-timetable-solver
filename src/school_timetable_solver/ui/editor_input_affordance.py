@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QEvent, QModelIndex, QPointF, QLocale, QObject, Qt, QTimer
+from PySide6.QtCore import QDate, QEvent, QLocale, QModelIndex, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QComboBox,
