@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -16,6 +16,56 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+_DIVISION_CHOICES = ("小学", "中学", "高校", "その他")
+_EXAM_CATEGORY_CHOICES = ("受験", "非受験", "特別", "その他")
+
+_DIVISION_LABELS = {
+    "小学": "小学",
+    "小学校": "小学",
+    "elementary": "小学",
+    "elementary_school": "小学",
+    "primary": "小学",
+    "primary_school": "小学",
+    "elem": "小学",
+    "中学": "中学",
+    "中学校": "中学",
+    "middle": "中学",
+    "middle_school": "中学",
+    "junior_high": "中学",
+    "junior_high_school": "中学",
+    "高校": "高校",
+    "高等学校": "高校",
+    "high": "高校",
+    "high_school": "高校",
+    "senior_high": "高校",
+    "senior_high_school": "高校",
+    "その他": "その他",
+    "other": "その他",
+    "others": "その他",
+}
+
+_EXAM_CATEGORY_LABELS = {
+    "受験": "受験",
+    "exam": "受験",
+    "examination": "受験",
+    "entrance_exam": "受験",
+    "受験学年": "受験",
+    "非受験": "非受験",
+    "non_exam": "非受験",
+    "nonexam": "非受験",
+    "non_examinee": "非受験",
+    "regular": "非受験",
+    "特別": "特別",
+    "special": "特別",
+    "その他": "その他",
+    "なし": "その他",
+    "none": "その他",
+    "null": "その他",
+    "other": "その他",
+    "others": "その他",
+    "": "その他",
+}
 
 
 def apply_editor_presentation(root: QWidget) -> None:
@@ -150,14 +200,14 @@ def _apply_dependency_choices(root: QWidget) -> None:
         _configure_choice_column(
             class_table,
             "学部",
-            _column_values(class_table, "学部"),
-            editable=True,
+            _DIVISION_CHOICES,
+            normalize_current=_normalize_division,
         )
         _configure_choice_column(
             class_table,
             "受験区分",
-            _column_values(class_table, "受験区分"),
-            editable=True,
+            _EXAM_CATEGORY_CHOICES,
+            normalize_current=_normalize_exam_category,
         )
 
     if subject_table is not None:
@@ -247,6 +297,7 @@ def _configure_choice_column(
     *,
     editable: bool = False,
     allow_blank: bool = False,
+    normalize_current: Callable[[str], str] | None = None,
 ) -> None:
     column = _column_index(table, header)
     if column is None:
@@ -259,6 +310,7 @@ def _configure_choice_column(
             choices,
             editable=editable,
             allow_blank=allow_blank,
+            normalize_current=normalize_current,
         )
 
 
@@ -270,8 +322,12 @@ def _set_choice_cell(
     *,
     editable: bool,
     allow_blank: bool,
+    normalize_current: Callable[[str], str] | None,
 ) -> None:
     current = _cell_text(table, row, column)
+    if normalize_current is not None:
+        current = normalize_current(current)
+
     existing = table.cellWidget(row, column)
     is_new = not isinstance(existing, QComboBox)
     combo = QComboBox(table) if is_new else existing
@@ -308,6 +364,18 @@ def _set_choice_cell(
     combo.setProperty("dependencyChoice", True)
     if is_new:
         table.setCellWidget(row, column, combo)
+
+
+def _normalize_division(value: str) -> str:
+    return _DIVISION_LABELS.get(_normalized_token(value), "その他")
+
+
+def _normalize_exam_category(value: str) -> str:
+    return _EXAM_CATEGORY_LABELS.get(_normalized_token(value), "その他")
+
+
+def _normalized_token(value: str) -> str:
+    return value.strip().casefold().replace("-", "_").replace(" ", "_")
 
 
 def _compact_teacher_load_cards(root: QWidget) -> None:
