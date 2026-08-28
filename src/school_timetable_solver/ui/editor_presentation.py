@@ -273,14 +273,9 @@ def _set_choice_cell(
 ) -> None:
     current = _cell_text(table, row, column)
     existing = table.cellWidget(row, column)
-    combo = existing if isinstance(existing, QComboBox) else QComboBox(table)
-
-    combo.blockSignals(True)
-    combo.setEditable(True)
-    line_edit = combo.lineEdit()
-    if line_edit is not None:
-        line_edit.setReadOnly(not editable)
-        line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    is_new = not isinstance(existing, QComboBox)
+    combo = QComboBox(table) if is_new else existing
+    assert isinstance(combo, QComboBox)
 
     values = list(choices)
     if allow_blank and "" not in values:
@@ -288,12 +283,31 @@ def _set_choice_cell(
     if current and current not in values:
         values.append(current)
 
-    combo.clear()
-    combo.addItems(values)
-    combo.setCurrentText(current)
+    desired_values = tuple(values)
+    current_values = tuple(combo.itemText(index) for index in range(combo.count()))
+    needs_item_refresh = current_values != desired_values
+    needs_mode_refresh = combo.isEditable() != editable
+
+    if needs_item_refresh or needs_mode_refresh:
+        combo.blockSignals(True)
+        combo.setEditable(editable)
+        if editable:
+            line_edit = combo.lineEdit()
+            if line_edit is not None:
+                line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if needs_item_refresh:
+            combo.clear()
+            combo.addItems(values)
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+    elif combo.currentText() != current:
+        combo.blockSignals(True)
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+
     combo.setProperty("dependencyChoice", True)
-    combo.blockSignals(False)
-    table.setCellWidget(row, column, combo)
+    if is_new:
+        table.setCellWidget(row, column, combo)
 
 
 def _compact_teacher_load_cards(root: QWidget) -> None:
@@ -325,18 +339,19 @@ def _compact_teacher_load_cards(root: QWidget) -> None:
 
 
 def _install_dynamic_refresh_hooks(root: QWidget) -> None:
-    for combo in root.findChildren(QComboBox):
-        if combo.property("presentationRefreshHooked"):
-            continue
-        combo.setProperty("presentationRefreshHooked", True)
-        combo.currentTextChanged.connect(
-            lambda _text, editor=root: _schedule_refresh(editor)
-        )
+    tables = root.findChildren(QTableWidget)
+    source_tables = (
+        _find_table(tables, ("校舎名",)),
+        _find_table(tables, ("教師", "所属校舎")),
+    )
 
-    for table in root.findChildren(QTableWidget):
-        if table.property("presentationRefreshHooked"):
+    # Only source masters trigger dependency regeneration. Dependent QComboBoxes do
+    # not refresh the whole editor when selected; rebuilding them during popup
+    # interaction caused dropdowns to close or become unresponsive on later rows.
+    for table in source_tables:
+        if table is None or table.property("dependencySourceRefreshHooked"):
             continue
-        table.setProperty("presentationRefreshHooked", True)
+        table.setProperty("dependencySourceRefreshHooked", True)
         table.cellChanged.connect(
             lambda _row, _column, editor=root: _schedule_refresh(editor)
         )
