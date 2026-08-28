@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import QModelIndex, QPointF, QTime, Qt, QTimer
+from PySide6.QtCore import QModelIndex, QPointF, Qt, QTime, QTimer
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QComboBox,
@@ -177,7 +177,7 @@ class _FiveMinuteTimeEdit(QTimeEdit):
         self.editingFinished.connect(self._snap_to_five_minutes)
 
     def stepBy(self, steps: int) -> None:
-        if self.currentSection() is QDateTimeEdit.Section.HourSection:
+        if self.currentSection() == QDateTimeEdit.Section.HourSection:
             self.setTime(self.time().addSecs(steps * 60 * 60))
             return
         self.setTime(self.time().addSecs(steps * 5 * 60))
