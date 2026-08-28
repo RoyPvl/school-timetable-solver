@@ -198,6 +198,7 @@ QLineEdit,
 QPlainTextEdit,
 QComboBox,
 QDateEdit,
+QTimeEdit,
 QSpinBox,
 QDoubleSpinBox {
     background: #171a1f;
@@ -211,6 +212,7 @@ QLineEdit:focus,
 QPlainTextEdit:focus,
 QComboBox:focus,
 QDateEdit:focus,
+QTimeEdit:focus,
 QSpinBox:focus,
 QDoubleSpinBox:focus {
     border: 1px solid #6a94c8;
