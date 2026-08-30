@@ -20,7 +20,7 @@ _TABLE_ROW_HEIGHT = 38
 _DATE_DISPLAY_FORMAT = "yyyy/MM/dd (ddd)"
 _JAPANESE_LOCALE = QLocale(QLocale.Language.Japanese, QLocale.Country.Japan)
 _SCHEDULE_DATE_WIDTH = 190
-_SCHEDULE_PERIOD_WIDTH = 58
+_SCHEDULE_PERIOD_WIDTH = 70
 _SCHEDULE_PERIOD_CHOICES = ("✓", "—")
 _MASTER_ENABLED_TABLES = (
     frozenset(("校舎", "教室", "優先度", "有効")),
