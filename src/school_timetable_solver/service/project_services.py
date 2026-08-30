@@ -13,6 +13,7 @@ from school_timetable_solver.model.project_models import (
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
     GenerationResultModel,
+    InputReadResultModel,
 )
 from school_timetable_solver.service.protocols import (
     ExecutionLogger,
@@ -36,6 +37,23 @@ class LoadProjectService:
 
     def execute(self, project_id: str) -> ProjectModel | None:
         return self._project_store.load(project_id)
+
+
+class LoadProjectInputService:
+    """Read the current executable input snapshot for an imported desktop project."""
+
+    def __init__(self, project_store: ProjectStore, input_reader: InputReader) -> None:
+        self._project_store = project_store
+        self._input_reader = input_reader
+
+    def execute(self, project_id: str) -> InputReadResultModel:
+        project = self._project_store.load(project_id)
+        if project is None:
+            raise ValueError("保存済みデータが見つかりません")
+        input_path = project.imported_workbook_path
+        if input_path is None or not input_path.is_file():
+            return InputReadResultModel(input_data=None, issues=())
+        return self._input_reader.read(input_path)
 
 
 class CreateProjectService:
