@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from PySide6.QtCore import QDate, QEvent, QLocale, QModelIndex, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
@@ -22,6 +24,8 @@ _JAPANESE_LOCALE = QLocale(QLocale.Language.Japanese, QLocale.Country.Japan)
 _SCHEDULE_DATE_WIDTH = 190
 _SCHEDULE_PERIOD_WIDTH = 70
 _SCHEDULE_PERIOD_CHOICES = ("✓", "—")
+_TEACHER_LEAVE_TEACHER_WIDTH = 120
+_TEACHER_LEAVE_DATE_WIDTH = 88
 _MASTER_ENABLED_TABLES = (
     frozenset(("校舎", "教室", "優先度", "有効")),
     frozenset(("教師", "所属校舎", "有効")),
@@ -165,14 +169,32 @@ def prepare_master_active_rows(root: QWidget) -> None:
 
 def apply_input_affordances(root: QWidget) -> None:
     """Make editable text and selection controls visually explicit."""
-    for table in root.findChildren(QTableWidget):
+    tables = root.findChildren(QTableWidget)
+    for table in tables:
         _remove_master_enabled_column(table)
         _remove_weekday_column(table)
+
+    class_choices = _master_column_values(
+        tables,
+        required_headers=("クラス", "校舎", "学部", "担任"),
+        value_header="クラス",
+    )
+    teacher_choices = _master_column_values(
+        tables,
+        required_headers=("教師", "所属校舎"),
+        value_header="教師",
+    )
+
+    for table in tables:
         _normalize_table_row_height(table)
         _show_schedule_period_inputs(table)
+        _show_business_choice_inputs(table, class_choices, teacher_choices)
+        _prepare_lesson_count_total(table)
         _show_date_inputs(table)
         _show_text_inputs(table)
+        _install_lesson_count_total_updates(table)
         _configure_schedule_column_widths(table)
+        _configure_teacher_leave_columns(table)
 
     for combo in root.findChildren(QComboBox):
         _show_selection_affordance(combo)
@@ -205,6 +227,28 @@ def _is_schedule_table(table: QTableWidget) -> bool:
     return "日付" in headers and "備考" in headers
 
 
+def _is_lesson_count_table(table: QTableWidget) -> bool:
+    headers = set(_table_headers(table))
+    return "クラス" in headers and "計" in headers and "担任" not in headers
+
+
+def _is_teacher_assignment_table(table: QTableWidget) -> bool:
+    headers = set(_table_headers(table))
+    return "クラス" in headers and "担任" in headers and "校舎" not in headers
+
+
+def _is_teacher_leave_matrix(table: QTableWidget) -> bool:
+    headers = _table_headers(table)
+    if not headers or headers[0] != "教師" or len(headers) < 2:
+        return False
+    return all(_looks_like_short_date(header) for header in headers[1:])
+
+
+def _looks_like_short_date(value: str) -> bool:
+    month_day = value.split("/")
+    return len(month_day) == 2 and all(part.isdigit() for part in month_day)
+
+
 def _table_headers(table: QTableWidget) -> tuple[str, ...]:
     return tuple(
         item.text() if item is not None else ""
@@ -221,12 +265,45 @@ def _column_index(table: QTableWidget, header: str) -> int | None:
     return None
 
 
+def _find_table(
+    tables: Iterable[QTableWidget],
+    required_headers: tuple[str, ...],
+) -> QTableWidget | None:
+    required = set(required_headers)
+    for table in tables:
+        if required.issubset(_table_headers(table)):
+            return table
+    return None
+
+
+def _master_column_values(
+    tables: Iterable[QTableWidget],
+    *,
+    required_headers: tuple[str, ...],
+    value_header: str,
+) -> tuple[str, ...]:
+    table = _find_table(tables, required_headers)
+    if table is None:
+        return ()
+    column = _column_index(table, value_header)
+    if column is None:
+        return ()
+    values: list[str] = []
+    for row in range(table.rowCount()):
+        value = _cell_text(table, row, column).strip()
+        if value and value not in values:
+            values.append(value)
+    return tuple(values)
+
+
 def _cell_text(table: QTableWidget, row: int, column: int) -> str:
     widget = table.cellWidget(row, column)
     if isinstance(widget, QComboBox):
         return widget.currentText()
     if isinstance(widget, QDateEdit):
         return widget.date().toString("yyyy/MM/dd")
+    if isinstance(widget, QLineEdit):
+        return widget.text()
     item = table.item(row, column)
     return item.text() if item is not None else ""
 
@@ -255,29 +332,145 @@ def _show_schedule_period_inputs(table: QTableWidget) -> None:
     )
     for row in range(table.rowCount()):
         for column in period_columns:
-            existing = table.cellWidget(row, column)
-            if isinstance(existing, QComboBox):
+            item = _ensure_item(table, row, column, "—")
+            _set_choice_cell(table, row, column, _SCHEDULE_PERIOD_CHOICES, item.text())
+
+
+def _show_business_choice_inputs(
+    table: QTableWidget,
+    class_choices: tuple[str, ...],
+    teacher_choices: tuple[str, ...],
+) -> None:
+    class_column = _column_index(table, "クラス")
+    if class_column is not None and (
+        _is_lesson_count_table(table) or _is_teacher_assignment_table(table)
+    ):
+        for row in range(table.rowCount()):
+            current = _cell_text(table, row, class_column)
+            _set_choice_cell(table, row, class_column, class_choices, current)
+
+    if not _is_teacher_assignment_table(table):
+        return
+
+    # Configure by physical column index, not header name. Duplicate subject names
+    # must still produce an independent teacher selector in every subject column.
+    for column in range(table.columnCount()):
+        if column == class_column:
+            continue
+        for row in range(table.rowCount()):
+            current = _cell_text(table, row, column)
+            _set_choice_cell(
+                table,
+                row,
+                column,
+                teacher_choices,
+                current,
+                allow_blank=True,
+            )
+
+
+def _set_choice_cell(
+    table: QTableWidget,
+    row: int,
+    column: int,
+    choices: tuple[str, ...],
+    current: str,
+    *,
+    allow_blank: bool = False,
+) -> None:
+    values = list(choices)
+    if allow_blank and "" not in values:
+        values.insert(0, "")
+    if current and current not in values:
+        values.append(current)
+
+    existing = table.cellWidget(row, column)
+    if isinstance(existing, QComboBox):
+        combo = existing
+    else:
+        if existing is not None:
+            table.removeCellWidget(row, column)
+            existing.deleteLater()
+        combo = QComboBox(table)
+        table.setCellWidget(row, column, combo)
+
+    desired = tuple(values)
+    actual = tuple(combo.itemText(index) for index in range(combo.count()))
+    if actual != desired:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(values)
+        combo.blockSignals(False)
+    if combo.currentText() != current:
+        combo.blockSignals(True)
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+
+    item = _ensure_item(table, row, column, current)
+    item.setText(current)
+    if not combo.property("cellValueSyncInstalled"):
+        combo.currentTextChanged.connect(item.setText)
+        combo.setProperty("cellValueSyncInstalled", True)
+    if not combo.view().property("circleSelectionDelegateInstalled"):
+        combo.view().setItemDelegate(_ChoiceSelectionDelegate(combo))
+        combo.view().setProperty("circleSelectionDelegateInstalled", True)
+
+
+def _prepare_lesson_count_total(table: QTableWidget) -> None:
+    if not _is_lesson_count_table(table):
+        return
+    total_column = _column_index(table, "計")
+    if total_column is None:
+        return
+    for row in range(table.rowCount()):
+        existing = table.cellWidget(row, total_column)
+        if existing is not None:
+            table.removeCellWidget(row, total_column)
+            existing.deleteLater()
+        item = _ensure_item(table, row, total_column, "0")
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setToolTip("各教科のコマ数から自動計算")
+
+
+def _install_lesson_count_total_updates(table: QTableWidget) -> None:
+    if not _is_lesson_count_table(table):
+        return
+    class_column = _column_index(table, "クラス")
+    total_column = _column_index(table, "計")
+    if class_column is None or total_column is None:
+        return
+
+    for row in range(table.rowCount()):
+        for column in range(table.columnCount()):
+            if column in {class_column, total_column}:
                 continue
-
-            item = table.item(row, column)
-            if item is None:
-                item = QTableWidgetItem("—")
-                table.setItem(row, column, item)
-            current = _normalize_period_choice(item.text())
-            item.setText(current)
-
-            combo = QComboBox(table)
-            combo.setObjectName("schedulePeriodChoice")
-            combo.addItems(_SCHEDULE_PERIOD_CHOICES)
-            combo.setCurrentText(current)
-            combo.currentTextChanged.connect(item.setText)
-            combo.view().setItemDelegate(_ChoiceSelectionDelegate(combo))
-            table.setCellWidget(row, column, combo)
+            widget = table.cellWidget(row, column)
+            if not isinstance(widget, QLineEdit) or widget.property("rowTotalHookInstalled"):
+                continue
+            widget.textChanged.connect(
+                lambda _text, target=table, target_row=row: _recalculate_lesson_count_row(
+                    target, target_row
+                )
+            )
+            widget.setProperty("rowTotalHookInstalled", True)
+        _recalculate_lesson_count_row(table, row)
 
 
-def _normalize_period_choice(value: str) -> str:
-    normalized = value.strip().casefold()
-    return "✓" if normalized in _ENABLED_LABELS else "—"
+def _recalculate_lesson_count_row(table: QTableWidget, row: int) -> None:
+    class_column = _column_index(table, "クラス")
+    total_column = _column_index(table, "計")
+    if class_column is None or total_column is None:
+        return
+    total = 0
+    for column in range(table.columnCount()):
+        if column in {class_column, total_column}:
+            continue
+        value = _cell_text(table, row, column).strip()
+        try:
+            total += int(value) if value else 0
+        except ValueError:
+            continue
+    _ensure_item(table, row, total_column, "0").setText(str(total))
 
 
 def _show_date_inputs(table: QTableWidget) -> None:
@@ -290,10 +483,7 @@ def _show_date_inputs(table: QTableWidget) -> None:
         if isinstance(existing, QDateEdit):
             continue
 
-        item = table.item(row, date_column)
-        if item is None:
-            item = QTableWidgetItem("")
-            table.setItem(row, date_column, item)
+        item = _ensure_item(table, row, date_column, "")
         parsed = _parse_date(item.text())
         if not parsed.isValid():
             continue
@@ -353,6 +543,34 @@ def _configure_schedule_column_widths(table: QTableWidget) -> None:
         else:
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             table.setColumnWidth(column, _SCHEDULE_PERIOD_WIDTH)
+
+
+def _configure_teacher_leave_columns(table: QTableWidget) -> None:
+    if not _is_teacher_leave_matrix(table):
+        return
+
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    for column in range(table.columnCount()):
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(
+            column,
+            _TEACHER_LEAVE_TEACHER_WIDTH if column == 0 else _TEACHER_LEAVE_DATE_WIDTH,
+        )
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+
+def _ensure_item(
+    table: QTableWidget,
+    row: int,
+    column: int,
+    default: str,
+) -> QTableWidgetItem:
+    item = table.item(row, column)
+    if item is None:
+        item = QTableWidgetItem(default)
+        table.setItem(row, column, item)
+    return item
 
 
 def _show_selection_affordance(combo: QComboBox) -> None:
