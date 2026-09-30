@@ -195,6 +195,7 @@ def apply_input_affordances(root: QWidget) -> None:
         _install_lesson_count_total_updates(table)
         _configure_schedule_column_widths(table)
         _configure_teacher_leave_columns(table)
+        _remove_backing_items_for_widget_cells(table)
 
     for combo in root.findChildren(QComboBox):
         _show_selection_affordance(combo)
@@ -332,8 +333,8 @@ def _show_schedule_period_inputs(table: QTableWidget) -> None:
     )
     for row in range(table.rowCount()):
         for column in period_columns:
-            item = _ensure_item(table, row, column, "—")
-            _set_choice_cell(table, row, column, _SCHEDULE_PERIOD_CHOICES, item.text())
+            current = _cell_text(table, row, column) or "—"
+            _set_choice_cell(table, row, column, _SCHEDULE_PERIOD_CHOICES, current)
 
 
 def _show_business_choice_inputs(
@@ -406,11 +407,7 @@ def _set_choice_cell(
         combo.setCurrentText(current)
         combo.blockSignals(False)
 
-    item = _ensure_item(table, row, column, current)
-    item.setText(current)
-    if not combo.property("cellValueSyncInstalled"):
-        combo.currentTextChanged.connect(item.setText)
-        combo.setProperty("cellValueSyncInstalled", True)
+    _remove_backing_item(table, row, column)
     if not combo.view().property("circleSelectionDelegateInstalled"):
         combo.view().setItemDelegate(_ChoiceSelectionDelegate(combo))
         combo.view().setProperty("circleSelectionDelegateInstalled", True)
@@ -481,10 +478,10 @@ def _show_date_inputs(table: QTableWidget) -> None:
     for row in range(table.rowCount()):
         existing = table.cellWidget(row, date_column)
         if isinstance(existing, QDateEdit):
+            _remove_backing_item(table, row, date_column)
             continue
 
-        item = _ensure_item(table, row, date_column, "")
-        parsed = _parse_date(item.text())
+        parsed = _parse_date(_cell_text(table, row, date_column))
         if not parsed.isValid():
             continue
 
@@ -497,10 +494,8 @@ def _show_date_inputs(table: QTableWidget) -> None:
         line_edit = editor.lineEdit()
         if line_edit is not None:
             line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        editor.dateChanged.connect(
-            lambda selected, cell=item: cell.setText(selected.toString("yyyy/MM/dd"))
-        )
         table.setCellWidget(row, date_column, editor)
+        _remove_backing_item(table, row, date_column)
 
 
 def _parse_date(value: str) -> QDate:
@@ -524,8 +519,13 @@ def _show_text_inputs(table: QTableWidget) -> None:
             editor = QLineEdit(item.text(), table)
             editor.setObjectName("tableTextInput")
             editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            editor.textChanged.connect(item.setText)
             table.setCellWidget(row, column, editor)
+            _remove_backing_item(table, row, column)
+            editor.textChanged.connect(
+                lambda _text, target=table, target_row=row, target_column=column: (
+                    target.cellChanged.emit(target_row, target_column)
+                )
+            )
 
 
 def _configure_schedule_column_widths(table: QTableWidget) -> None:
@@ -558,6 +558,19 @@ def _configure_teacher_leave_columns(table: QTableWidget) -> None:
             _TEACHER_LEAVE_TEACHER_WIDTH if column == 0 else _TEACHER_LEAVE_DATE_WIDTH,
         )
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+
+def _remove_backing_item(table: QTableWidget, row: int, column: int) -> None:
+    if table.item(row, column) is not None:
+        table.takeItem(row, column)
+
+
+def _remove_backing_items_for_widget_cells(table: QTableWidget) -> None:
+    """Keep cell widgets as the sole value holder for interactive cells."""
+    for row in range(table.rowCount()):
+        for column in range(table.columnCount()):
+            if table.cellWidget(row, column) is not None:
+                _remove_backing_item(table, row, column)
 
 
 def _ensure_item(
