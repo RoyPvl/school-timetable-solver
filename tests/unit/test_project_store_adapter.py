@@ -30,9 +30,7 @@ def test_project_store_persists_lists_updates_and_deletes(tmp_path: Path) -> Non
     now = datetime(2026, 8, 27, tzinfo=UTC)
 
     first = store.create(_project("p1", "first", ProjectSource.BLANK, now))
-    second = store.create(
-        _project("p2", "second", ProjectSource.BLANK, now + timedelta(minutes=1))
-    )
+    second = store.create(_project("p2", "second", ProjectSource.BLANK, now + timedelta(minutes=1)))
 
     assert store.load(first.project_id) == first
     assert store.list() == (second, first)

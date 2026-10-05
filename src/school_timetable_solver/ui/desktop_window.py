@@ -73,8 +73,7 @@ class ProjectCardWidget(QFrame):
 
         run_button = QPushButton("実行")
         can_run = (
-            project.imported_workbook_path is not None
-            and project.imported_workbook_path.is_file()
+            project.imported_workbook_path is not None and project.imported_workbook_path.is_file()
         )
         run_button.setEnabled(can_run)
         if not can_run:
@@ -510,14 +509,15 @@ class DesktopWindow(QMainWindow):
 
         self._run_thread = thread
         self._run_worker = worker
-        self._run_progress = QProgressDialog(self)
-        self._run_progress.setWindowTitle("時間割を実行")
-        self._run_progress.setLabelText("時間割を生成しています...")
-        self._run_progress.setRange(0, 0)
-        self._run_progress.setCancelButton(None)
-        self._run_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._run_progress.setMinimumDuration(0)
-        self._run_progress.show()
+        progress = QProgressDialog(self)
+        self._run_progress = progress
+        progress.setWindowTitle("時間割を実行")
+        progress.setLabelText("時間割を生成しています...")
+        progress.setRange(0, 0)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
         thread.started.connect(worker.execute)
         thread.start()
 
@@ -534,9 +534,7 @@ class DesktopWindow(QMainWindow):
             return
 
         errors = [
-            issue.message
-            for issue in result.validation_report.issues
-            if issue.severity == "ERROR"
+            issue.message for issue in result.validation_report.issues if issue.severity == "ERROR"
         ]
         details = "\n".join(errors[:5])
         message = f"実行は完了しましたが、時間割を出力できませんでした。\nstatus: {result.status}"
