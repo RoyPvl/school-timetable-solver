@@ -61,6 +61,13 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
             return
 
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_col is None or min_row is None or max_col is None or max_row is None:
+            issues.append(
+                self._issue(
+                    "V2_TABLE_RANGE", "T_REFERENCE_MAP", "入力表の範囲には行と列を指定してください"
+                )
+            )
+            return
         headers = {
             str(table_sheet.cell(min_row, column).value).strip(): column
             for column in range(min_col, max_col + 1)
@@ -92,7 +99,11 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
             output_name = "" if raw_output is None else str(raw_output)
             if entity is None and internal_id is None and label is None:
                 continue
-            if entity not in {"teacher", "subject", "class"} or internal_id is None or label is None:
+            if (
+                entity not in {"teacher", "subject", "class"}
+                or internal_id is None
+                or label is None
+            ):
                 issues.append(
                     self._issue(
                         "V2_REFERENCE_MAP_ROW",
@@ -104,25 +115,55 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
 
             if entity == "teacher":
                 if label in teacher_labels:
-                    issues.append(self._issue("V2_DUPLICATE_INPUT_LABEL", label, f"教師の入力用ラベルが重複しています: {label}"))
+                    issues.append(
+                        self._issue(
+                            "V2_DUPLICATE_INPUT_LABEL",
+                            label,
+                            f"教師の入力用ラベルが重複しています: {label}",
+                        )
+                    )
                     continue
                 if internal_id in teacher_names:
-                    issues.append(self._issue("V2_DUPLICATE_REFERENCE_ID", internal_id, f"教師の内部IDが重複しています: {internal_id}"))
+                    issues.append(
+                        self._issue(
+                            "V2_DUPLICATE_REFERENCE_ID",
+                            internal_id,
+                            f"教師の内部IDが重複しています: {internal_id}",
+                        )
+                    )
                     continue
                 teacher_labels[label] = internal_id
                 teacher_names[internal_id] = output_name
             elif entity == "subject":
                 if label in subject_labels:
-                    issues.append(self._issue("V2_DUPLICATE_INPUT_LABEL", label, f"教科の入力用ラベルが重複しています: {label}"))
+                    issues.append(
+                        self._issue(
+                            "V2_DUPLICATE_INPUT_LABEL",
+                            label,
+                            f"教科の入力用ラベルが重複しています: {label}",
+                        )
+                    )
                     continue
                 if internal_id in subject_names:
-                    issues.append(self._issue("V2_DUPLICATE_REFERENCE_ID", internal_id, f"教科の内部IDが重複しています: {internal_id}"))
+                    issues.append(
+                        self._issue(
+                            "V2_DUPLICATE_REFERENCE_ID",
+                            internal_id,
+                            f"教科の内部IDが重複しています: {internal_id}",
+                        )
+                    )
                     continue
                 subject_labels[label] = internal_id
                 subject_names[internal_id] = output_name
             else:
                 if internal_id in class_labels:
-                    issues.append(self._issue("V2_DUPLICATE_REFERENCE_ID", internal_id, f"クラスの内部IDが重複しています: {internal_id}"))
+                    issues.append(
+                        self._issue(
+                            "V2_DUPLICATE_REFERENCE_ID",
+                            internal_id,
+                            f"クラスの内部IDが重複しています: {internal_id}",
+                        )
+                    )
                     continue
                 class_labels[internal_id] = label
                 class_names[internal_id] = output_name
@@ -147,10 +188,18 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
         result: list[ClassModel] = []
         seen_keys: set[tuple[str, str]] = set()
         for index, row in enumerate(rows, start=1):
-            internal_id = self._required_text(row.get("内部ID"), "T_CLASSES", f"行{index}/内部ID", issues)
-            campus_id = self._resolve_name(row.get("校舎"), campus_by_name, "校舎", "T_CLASSES", index, issues)
-            input_label = self._required_text(row.get("クラス"), "T_CLASSES", f"行{index}/クラス", issues)
-            division_display = self._required_text(row.get("学部"), "T_CLASSES", f"行{index}", issues)
+            internal_id = self._required_text(
+                row.get("内部ID"), "T_CLASSES", f"行{index}/内部ID", issues
+            )
+            campus_id = self._resolve_name(
+                row.get("校舎"), campus_by_name, "校舎", "T_CLASSES", index, issues
+            )
+            input_label = self._required_text(
+                row.get("クラス"), "T_CLASSES", f"行{index}/クラス", issues
+            )
+            division_display = self._required_text(
+                row.get("学部"), "T_CLASSES", f"行{index}", issues
+            )
             division = self._division_to_internal.get(
                 division_display or "",
                 self._optional_text(row.get("内部学部")) or division_display,
@@ -171,9 +220,17 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
                 )
             )
             enabled = self._required_yes_no(row.get("使用"), "T_CLASSES", f"行{index}", issues)
-            if None in (internal_id, campus_id, input_label, division, grade, exam_category, enabled):
+            if (
+                internal_id is None
+                or campus_id is None
+                or input_label is None
+                or division is None
+                or grade is None
+                or exam_category is None
+                or enabled is None
+            ):
                 continue
-            expected_label = self._class_label_by_id.get(str(internal_id))
+            expected_label = self._class_label_by_id.get(internal_id)
             if expected_label != input_label:
                 issues.append(
                     self._issue(
@@ -183,7 +240,7 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
                     )
                 )
                 continue
-            key = (str(campus_id), input_label)
+            key = (campus_id, input_label)
             if key in seen_keys:
                 issues.append(
                     self._issue(
@@ -196,14 +253,14 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
             seen_keys.add(key)
             result.append(
                 ClassModel(
-                    str(internal_id),
+                    internal_id,
                     input_label,
-                    str(campus_id),
-                    str(division),
-                    int(grade),
-                    str(exam_category),
+                    campus_id,
+                    division,
+                    grade,
+                    exam_category,
                     homeroom_id,
-                    bool(enabled),
+                    enabled,
                 )
             )
         return result
@@ -228,7 +285,4 @@ class EntityReferenceExcelInputV2ReaderAdapter(ReferenceLabelExcelInputV2ReaderA
             issues,
             soft=soft,
         )
-        return [
-            replace(item, segment_id=f"{item.rule_id}_{item.segment_id}")
-            for item in result
-        ]
+        return [replace(item, segment_id=f"{item.rule_id}_{item.segment_id}") for item in result]
