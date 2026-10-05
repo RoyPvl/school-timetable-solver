@@ -192,6 +192,8 @@ def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
         assert "T_REFERENCE_MAP" in system_sheet.tables
         table = system_sheet.tables["T_REFERENCE_MAP"]
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        assert min_col is not None and min_row is not None
+        assert max_col is not None and max_row is not None
         headers = [
             system_sheet.cell(min_row, column).value for column in range(min_col, max_col + 1)
         ]
@@ -204,8 +206,13 @@ def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
         ]
         teacher_rows = [row for row in rows if row["参照種別"] == "teacher"]
         subject_rows = [row for row in rows if row["参照種別"] == "subject"]
-        assert len({row["入力用ラベル"] for row in teacher_rows}) == len(teacher_rows)
-        assert len({row["入力用ラベル"] for row in subject_rows}) == len(subject_rows)
+        for entity_rows in (teacher_rows, subject_rows):
+            labels: set[str] = set()
+            for row in entity_rows:
+                label = row["入力用ラベル"]
+                assert isinstance(label, str)
+                assert label not in labels
+                labels.add(label)
         assert {
             row["内部ID"]: row["出力表示名"]
             for row in teacher_rows

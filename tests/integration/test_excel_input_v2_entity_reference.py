@@ -99,6 +99,8 @@ def test_v2_reference_labels_distinguish_same_class_output_name_within_campus(
         system_sheet = workbook["_system"]
         table = system_sheet.tables["T_REFERENCE_MAP"]
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        assert min_col is not None and min_row is not None
+        assert max_col is not None and max_row is not None
         headers = [
             system_sheet.cell(min_row, column).value for column in range(min_col, max_col + 1)
         ]
