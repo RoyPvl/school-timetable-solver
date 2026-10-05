@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
@@ -16,7 +17,9 @@ from school_timetable_solver.model.master_models import SubjectModel, TeacherMod
 from school_timetable_solver.service.planning_services import RuleResolverService
 
 
-def test_v2_round_trip_preserves_input_semantics(tmp_path, minimal_input_data: InputDataModel) -> None:
+def test_v2_round_trip_preserves_input_semantics(
+    tmp_path, minimal_input_data: InputDataModel
+) -> None:
     path = tmp_path / "input_v2.xlsx"
     ExcelV2WorkbookWriterAdapter().write(path, minimal_input_data)
 
@@ -40,7 +43,10 @@ def test_v2_round_trip_preserves_input_semantics(tmp_path, minimal_input_data: I
     assert actual.teacher_leaves == expected.teacher_leaves
     assert actual.placement_rules == expected.placement_rules
     assert actual.lesson_count_rule_segments == expected.lesson_count_rule_segments
-    assert actual.lesson_count_preference_rule_segments == expected.lesson_count_preference_rule_segments
+    assert (
+        actual.lesson_count_preference_rule_segments
+        == expected.lesson_count_preference_rule_segments
+    )
     assert actual.teacher_day_off_rules == expected.teacher_day_off_rules
     assert actual.homeroom_boundary_rules == expected.homeroom_boundary_rules
     assert actual.class_pair_overlap_rules == expected.class_pair_overlap_rules
@@ -112,7 +118,9 @@ def test_v2_migration_preserves_resolved_meaning_for_direct_class_rule_without_c
         attendance_streak_limit=None,
         priority=50,
     )
-    source = replace(minimal_input_data, placement_rules=(*minimal_input_data.placement_rules, rule))
+    source = replace(
+        minimal_input_data, placement_rules=(*minimal_input_data.placement_rules, rule)
+    )
     path = tmp_path / "input_v2.xlsx"
 
     ExcelV2WorkbookWriterAdapter().write(path, source)
@@ -129,9 +137,7 @@ def test_v2_migration_preserves_resolved_meaning_for_direct_class_rule_without_c
         if item.class_id == target_class.class_id
     ]
     actual_target = [
-        item
-        for item in actual_resolved.class_date_rules
-        if item.class_id == target_class.class_id
+        item for item in actual_resolved.class_date_rules if item.class_id == target_class.class_id
     ]
     assert [item.allowed_period_ids for item in actual_target] == [
         item.allowed_period_ids for item in expected_target
@@ -181,8 +187,7 @@ def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
         table = system_sheet.tables["T_REFERENCE_MAP"]
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
         headers = [
-            system_sheet.cell(min_row, column).value
-            for column in range(min_col, max_col + 1)
+            system_sheet.cell(min_row, column).value for column in range(min_col, max_col + 1)
         ]
         rows = [
             {
@@ -207,3 +212,24 @@ def test_v2_reference_labels_separate_input_identity_from_blank_output_name(
         } == {"SUBJECT_BLANK_A": None, "SUBJECT_BLANK_B": None}
     finally:
         workbook.close()
+
+
+def test_v2_reader_reports_input_error_for_table_without_row_and_column_bounds(
+    tmp_path: Path,
+    minimal_input_data: InputDataModel,
+) -> None:
+    path = tmp_path / "invalid_table_range.xlsx"
+    ExcelV2WorkbookWriterAdapter().write(path, minimal_input_data)
+    workbook = load_workbook(path)
+    try:
+        workbook["01_日程"].tables["T_CALENDAR"].ref = "A:B"
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+    result = CompatibleExcelInputReaderAdapter().read(path)
+
+    assert result.input_data is None
+    assert any(
+        issue.rule_id == "V2_TABLE_RANGE" and issue.severity == "ERROR" for issue in result.issues
+    )
