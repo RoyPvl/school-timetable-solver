@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from openpyxl import load_workbook
-from openpyxl.utils.cell import range_boundaries
 
 from school_timetable_solver.adapter.excel_v2_workbook_postprocessor import (
     ExcelV2WorkbookPostprocessor,
@@ -83,9 +82,7 @@ class ReferenceLabelExcelV2WorkbookPostprocessor(ExcelV2WorkbookPostprocessor):
         soft: bool,
     ) -> None:
         segments = (
-            data.lesson_count_preference_rule_segments
-            if soft
-            else data.lesson_count_rule_segments
+            data.lesson_count_preference_rule_segments if soft else data.lesson_count_rule_segments
         )
         table_name = "T_LESSON_COUNT_SOFT_TARGETS" if soft else "T_LESSON_COUNT_HARD_TARGETS"
         worksheet, headers, min_row, max_row = self._table(
@@ -111,8 +108,7 @@ class ReferenceLabelExcelV2WorkbookPostprocessor(ExcelV2WorkbookPostprocessor):
             provisional[item.class_id] = f"{item.class_name}（{context}）"
 
         duplicate_counts = Counter(
-            (item.campus_id, provisional[item.class_id])
-            for item in data.classes
+            (item.campus_id, provisional[item.class_id]) for item in data.classes
         )
         return {
             item.class_id: (
@@ -210,9 +206,7 @@ class ReferenceLabelExcelV2WorkbookPostprocessor(ExcelV2WorkbookPostprocessor):
         soft: bool,
     ) -> None:
         segments = (
-            data.lesson_count_preference_rule_segments
-            if soft
-            else data.lesson_count_rule_segments
+            data.lesson_count_preference_rule_segments if soft else data.lesson_count_rule_segments
         )
         table_name = "T_LESSON_COUNT_SOFT_TARGETS" if soft else "T_LESSON_COUNT_HARD_TARGETS"
         worksheet, headers, min_row, max_row = self._table(
@@ -276,16 +270,15 @@ class ReferenceLabelExcelV2WorkbookPostprocessor(ExcelV2WorkbookPostprocessor):
         data: InputDataModel,
         labels: dict[str, str],
     ) -> None:
-        worksheet = workbook["_system"]
+        worksheet, headers, min_row, max_row = self._table(workbook, "_system", "T_REFERENCE_MAP")
         table = worksheet.tables["T_REFERENCE_MAP"]
-        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
         start_row = max_row + 1
         for offset, item in enumerate(data.classes):
             row = start_row + offset
-            worksheet.cell(row, min_col, "class")
-            worksheet.cell(row, min_col + 1, item.class_id)
-            worksheet.cell(row, min_col + 2, labels[item.class_id])
-            worksheet.cell(row, min_col + 3, item.class_name)
+            worksheet.cell(row, headers["参照種別"], "class")
+            worksheet.cell(row, headers["内部ID"], item.class_id)
+            worksheet.cell(row, headers["入力用ラベル"], labels[item.class_id])
+            worksheet.cell(row, headers["出力表示名"], item.class_name)
         table.ref = f"A{min_row}:D{start_row + len(data.classes) - 1}"
 
     @staticmethod

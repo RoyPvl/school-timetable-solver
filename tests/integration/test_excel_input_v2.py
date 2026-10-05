@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
@@ -12,7 +13,12 @@ from school_timetable_solver.adapter.excel_v2_reference_postprocessor import (
     ReferenceLabelExcelV2WorkbookPostprocessor,
 )
 from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
-from school_timetable_solver.model.input_models import InputDataModel, PlacementRuleModel
+from school_timetable_solver.model.input_models import (
+    InputDataModel,
+    LessonCountPreferenceRuleSegmentModel,
+    LessonCountRuleSegmentModel,
+    PlacementRuleModel,
+)
 from school_timetable_solver.model.master_models import SubjectModel, TeacherModel
 from school_timetable_solver.service.planning_services import RuleResolverService
 
@@ -233,3 +239,89 @@ def test_v2_reader_reports_input_error_for_table_without_row_and_column_bounds(
     assert any(
         issue.rule_id == "V2_TABLE_RANGE" and issue.severity == "ERROR" for issue in result.issues
     )
+
+
+def test_v2_postprocessor_rejects_unbounded_saved_table_range(
+    tmp_path: Path, minimal_input_data: InputDataModel
+) -> None:
+    path = tmp_path / "invalid_postprocessor_range.xlsx"
+    ExcelV2WorkbookWriterAdapter().write(path, minimal_input_data)
+    workbook = load_workbook(path)
+    try:
+        workbook["03_教師"].tables["T_TEACHERS"].ref = "A:B"
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+    with pytest.raises(ValueError, match="T_TEACHERS requires a bounded cell range"):
+        ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, minimal_input_data)
+
+
+def test_v2_postprocessed_segments_preserve_targets_dates_counts_and_identity(
+    tmp_path: Path, minimal_input_data: InputDataModel
+) -> None:
+    class_id = minimal_input_data.classes[0].class_id
+    subject_id = minimal_input_data.subjects[0].subject_id
+    dates = [item.target_date for item in minimal_input_data.calendar_days]
+    hard = (
+        LessonCountRuleSegmentModel(
+            "HARD", "A", "厳密配置", True, class_id, subject_id, 2, dates[0], dates[0], ("P1", "P2")
+        ),
+        LessonCountRuleSegmentModel(
+            "HARD", "B", "厳密配置", True, class_id, subject_id, 2, dates[-1], dates[-1], ("P3",)
+        ),
+    )
+    soft = (
+        LessonCountPreferenceRuleSegmentModel(
+            "SOFT", "A", "希望配置", True, class_id, subject_id, 0, dates[0], dates[0], ("P4",)
+        ),
+        LessonCountPreferenceRuleSegmentModel(
+            "SOFT",
+            "B",
+            "希望配置",
+            True,
+            class_id,
+            subject_id,
+            0,
+            dates[-1],
+            dates[-1],
+            ("P5", "P6"),
+        ),
+    )
+    source = replace(
+        minimal_input_data,
+        lesson_count_rule_segments=hard,
+        lesson_count_preference_rule_segments=soft,
+    )
+    path = tmp_path / "segmented_input.xlsx"
+    ExcelV2WorkbookWriterAdapter().write(path, source)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, source)
+    result = CompatibleExcelInputReaderAdapter().read(path)
+    assert result.input_data is not None, result.issues
+    assert not [item for item in result.issues if item.severity == "ERROR"]
+    actual = result.input_data
+    assert actual.classes == source.classes
+    assert actual.teachers == source.teachers
+    assert actual.subjects == source.subjects
+    assert actual.lesson_requirements == source.lesson_requirements
+    assert [
+        (s.class_id, s.subject_id, s.exact_periods, s.start_date, s.end_date, s.target_period_ids)
+        for s in actual.lesson_count_rule_segments
+    ] == [
+        (class_id, subject_id, 2, dates[0], dates[0], ("P1", "P2")),
+        (class_id, subject_id, 2, dates[-1], dates[-1], ("P3",)),
+    ]
+    assert [
+        (
+            s.class_id,
+            s.subject_id,
+            s.preferred_periods,
+            s.start_date,
+            s.end_date,
+            s.target_period_ids,
+        )
+        for s in actual.lesson_count_preference_rule_segments
+    ] == [
+        (class_id, subject_id, 0, dates[0], dates[0], ("P4",)),
+        (class_id, subject_id, 0, dates[-1], dates[-1], ("P5", "P6")),
+    ]
