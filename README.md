@@ -147,3 +147,30 @@ uv run pytest
 - [コーディング規約 v0.1](docs/コーディング規約_v0.1_school-timetable-solver.md)
 
 実装は、作業中の修正指示、入力契約v1.1、出力契約v0.2、アーキテクチャv0.2、要件定義、基本設計、コーディング規約の順で解釈します。入出力契約と競合する固定授業、条件付き移動、一覧形式出力の記述は適用しません。
+
+## Desktop Editor
+
+ローカルGUIはPySide6とSQLiteを使用します。
+
+```bash
+uv sync --extra desktop
+uv run --extra desktop school-timetable-desktop
+```
+
+Homeで新規作成またはExcel取り込みを行い、共通設定・日程・授業回数・担当教師・休み・配置条件を編集します。変更は案件ごとに自動保存され、再起動後も復元されます。途中入力も保存でき、生成前の「入力を確認」で不足・矛盾を確認できます。「時間割を生成」で出力先と探索設定を指定します。
+
+生成はSQLiteに保存した編集内容を使用します。取り込んだExcelは元資料のコピーとして保持し、編集後の入力の正本にはしません。過去案件の「複製」でマスタと講習条件を独立した案件として引き継げます。
+
+保存エラーがあるときは「未保存」と表示し、画面終了・生成を止めます。別画面による更新で保存が競合した場合は「再読込」を使います。未保存の変更を破棄する場合は画面上で確認します。
+
+Desktopを含む品質チェック:
+
+```bash
+uv sync --extra desktop
+uv run ruff format --check .
+uv run ruff check .
+uv run pyright
+QT_QPA_PLATFORM=offscreen uv run --extra desktop pytest
+```
+
+[GUI Editor 保存・検証・生成契約](docs/GUI_Editor機能設計_v0.1_school-timetable-solver.md)

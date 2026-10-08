@@ -4,10 +4,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from school_timetable_solver.model.project_document_models import ProjectDocumentModel
 from school_timetable_solver.model.project_models import ProjectModel
 from school_timetable_solver.model.result_models import (
-    GenerationRequestModel,
-    GenerationResultModel,
     InputReadResultModel,
     TimetableDocumentModel,
 )
@@ -21,15 +20,15 @@ class TimetableWriter(Protocol):
     def write(self, document: TimetableDocumentModel, path: Path) -> None: ...
 
 
-class TimetableGenerator(Protocol):
-    def execute(self, request: GenerationRequestModel) -> GenerationResultModel: ...
-
-
 class ExecutionLogger(Protocol):
     def configure(self, path: Path | None) -> None: ...
 
 
 class ProjectStore(Protocol):
+    def load_document(self, project_id: str) -> ProjectDocumentModel | None: ...
+
+    def save_document(self, project_id: str, document: ProjectDocumentModel) -> None: ...
+
     def list(self) -> tuple[ProjectModel, ...]: ...
 
     def load(self, project_id: str) -> ProjectModel | None: ...
@@ -38,6 +37,7 @@ class ProjectStore(Protocol):
         self,
         project: ProjectModel,
         imported_source_path: Path | None = None,
+        document: ProjectDocumentModel | None = None,
     ) -> ProjectModel: ...
 
     def update_metadata(

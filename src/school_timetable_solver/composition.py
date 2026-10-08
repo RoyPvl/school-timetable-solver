@@ -8,6 +8,7 @@ from school_timetable_solver.adapter.execution_log_adapter import ExecutionLogAd
 from school_timetable_solver.constraint.hard_constraints import DEFAULT_HARD_CONSTRAINTS
 from school_timetable_solver.constraint.soft_constraints import DEFAULT_SOFT_CONSTRAINTS
 from school_timetable_solver.service.generation_services import (
+    GenerateFromInputDataService,
     GenerateTimetableService,
     ValidateInputService,
 )
@@ -50,6 +51,11 @@ class ApplicationComposition:
         ExecutionLogAdapter().configure(log_path)
         return GenerateTimetableService(
             input_reader=CompatibleExcelInputReaderAdapter(),
+            generator=self.create_generate_from_input_data_service(),
+        )
+
+    def create_generate_from_input_data_service(self) -> GenerateFromInputDataService:
+        return GenerateFromInputDataService(
             validators=DEFAULT_INPUT_VALIDATORS,
             rule_resolver=RuleResolverService(),
             candidate_builder=CandidateBuilderService(),

@@ -134,6 +134,7 @@ def test_soft_constraint_registration_has_unique_formal_rule_ids() -> None:
         "S21",
         "S22",
         "S23",
+        "S24",
     }
     assert all(callable(constraint.apply) for constraint in DEFAULT_SOFT_CONSTRAINTS)
 
@@ -147,13 +148,14 @@ def test_soft_constraint_priority_policy_matches_operational_order() -> None:
         "S15": 70,
         "S18": 60,
         "S23": 50,
+        "S24": 50,
         "S17": 40,
         "S21": 30,
-        "S22": 30,
+        "S22": 40,
         "S16": 20,
         "S19": 10,
         "S20": 10,
-        "S10": 5,
+        "S10": 60,
     }
     assert set(SOFT_CONSTRAINT_PRIORITY_POLICY) == {
         constraint.rule_id for constraint in DEFAULT_SOFT_CONSTRAINTS

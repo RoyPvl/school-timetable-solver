@@ -30,7 +30,11 @@ class CompatibleExcelInputReaderAdapter:
             if "_system" in workbook.sheetnames:
                 system_sheet = workbook["_system"]
                 for row in system_sheet.iter_rows(values_only=True):
-                    if len(row) >= 2 and row[0] == "schema_version" and str(row[1]).strip() == "2.0":
+                    if (
+                        len(row) >= 2
+                        and row[0] == "schema_version"
+                        and str(row[1]).strip() == "2.0"
+                    ):
                         return self._v2_reader.read(path)
         finally:
             workbook.close()

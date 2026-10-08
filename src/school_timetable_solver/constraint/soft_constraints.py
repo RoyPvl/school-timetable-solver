@@ -516,7 +516,11 @@ class TeacherCampusTransferPreferenceConstraint:
             tuple[str, date],
             list[cp_model.IntVar],
         ] = defaultdict(list)
-        for (teacher_id, target_date, campus_id), variables in variables_by_teacher_day_campus.items():
+        for (
+            teacher_id,
+            target_date,
+            campus_id,
+        ), variables in variables_by_teacher_day_campus.items():
             presence = context.model.new_bool_var(
                 f"s24_teacher_campus_day__{teacher_id}__{target_date.isoformat()}__{campus_id}"
             )

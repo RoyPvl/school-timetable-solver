@@ -6,6 +6,11 @@ from school_timetable_solver.adapter.excel_input_router import CompatibleExcelIn
 from school_timetable_solver.adapter.execution_log_adapter import ExecutionLogAdapter
 from school_timetable_solver.adapter.project_store_adapter import LocalProjectStoreAdapter
 from school_timetable_solver.composition import ApplicationComposition
+from school_timetable_solver.service.project_document_services import (
+    BuildProjectInputService,
+    LoadProjectDocumentService,
+    SaveProjectDocumentService,
+)
 from school_timetable_solver.service.project_services import (
     CreateProjectService,
     DeleteProjectService,
@@ -13,7 +18,6 @@ from school_timetable_solver.service.project_services import (
     ExecuteProjectService,
     ImportProjectService,
     ListProjectsService,
-    LoadProjectInputService,
     LoadProjectService,
     UpdateProjectMetadataService,
 )
@@ -27,11 +31,13 @@ class DesktopApplicationComposition:
         project_store = LocalProjectStoreAdapter(data_directory)
         project_store.initialize()
         input_reader = CompatibleExcelInputReaderAdapter()
-        generator = ApplicationComposition().create_generate_timetable_service()
+        generator = ApplicationComposition().create_generate_from_input_data_service()
+        load_document = LoadProjectDocumentService(project_store, input_reader)
         return SeasonalDesktopWindow(
+            load_document=load_document,
+            save_document=SaveProjectDocumentService(project_store),
             list_projects=ListProjectsService(project_store),
             load_project=LoadProjectService(project_store),
-            load_project_input=LoadProjectInputService(project_store, input_reader),
             create_project=CreateProjectService(project_store),
             import_project=ImportProjectService(project_store, input_reader),
             update_project=UpdateProjectMetadataService(project_store),
@@ -40,6 +46,8 @@ class DesktopApplicationComposition:
             execute_project=ExecuteProjectService(
                 project_store,
                 generator,
+                load_document,
+                BuildProjectInputService(),
                 ExecutionLogAdapter(),
             ),
         )

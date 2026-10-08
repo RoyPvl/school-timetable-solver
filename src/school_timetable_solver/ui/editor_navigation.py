@@ -30,6 +30,4 @@ SEASONAL_NAVIGATION = (
     EditorNavigationItem(EditorSection.REVIEW, "入力確認", "毎季"),
 )
 
-COMMON_NAVIGATION = (
-    EditorNavigationItem(EditorSection.MASTER, "マスタ管理", "共通設定"),
-)
+COMMON_NAVIGATION = (EditorNavigationItem(EditorSection.MASTER, "マスタ管理", "共通設定"),)

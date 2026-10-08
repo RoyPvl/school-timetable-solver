@@ -82,7 +82,7 @@ def test_real_excel_flows_through_validation_solver_result_and_document() -> Non
     assert len(document.dates) == 3
 
 
-def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
+def test_single_subject_class_spreads_lessons_with_current_soft_policy(
     minimal_input_data: InputDataModel,
     tmp_path: Path,
 ) -> None:
@@ -149,15 +149,16 @@ def test_higher_priority_s14_prevents_s12_from_adding_another_double_day(
         "S14",
         "S13",
         "S15",
+        "S10",
         "S18",
         "S23",
+        "S24",
+        "S22",
         "S17",
         "S21",
-        "S22",
         "S16",
         "S20",
         "S19",
-        "S10",
     )
 
 

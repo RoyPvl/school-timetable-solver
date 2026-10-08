@@ -20,7 +20,9 @@ def test_v2_reader_generates_globally_unique_lesson_count_segment_ids(
     minimal_input_data: InputDataModel,
 ) -> None:
     requirement = next(item for item in minimal_input_data.lesson_requirements if item.enabled)
-    target_date = next(day.target_date for day in minimal_input_data.calendar_days if day.output_enabled)
+    target_date = next(
+        day.target_date for day in minimal_input_data.calendar_days if day.output_enabled
+    )
     period_id = minimal_input_data.periods[0].period_id
 
     hard_rules = (
