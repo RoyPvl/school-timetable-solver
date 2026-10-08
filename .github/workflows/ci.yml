@@ -20,12 +20,14 @@ jobs:
       - name: Install desktop runtime
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
       - name: Install
-        run: python -m pip install -e '.[desktop]' pytest ruff pyright
+        run: |
+          python -m pip install uv
+          uv sync --locked --extra desktop --python 3.12
       - name: Ruff format
-        run: ruff format --check .
+        run: uv run --no-sync ruff format --check .
       - name: Ruff
-        run: ruff check .
+        run: uv run --no-sync ruff check .
       - name: Pyright
-        run: pyright
+        run: uv run --no-sync pyright
       - name: Pytest including desktop lifecycle
-        run: pytest
+        run: uv run --no-sync pytest
