@@ -55,17 +55,25 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
 
     def _load_reference_map(self, workbook: Any, issues: list[ValidationIssueModel]) -> None:
         table = None
+        table_sheet = None
         for worksheet in workbook.worksheets:
             if "T_REFERENCE_MAP" in worksheet.tables:
                 table = worksheet.tables["T_REFERENCE_MAP"]
                 table_sheet = worksheet
                 break
-        if table is None:
+        if table is None or table_sheet is None:
             return
 
         from openpyxl.utils.cell import range_boundaries
 
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_col is None or min_row is None or max_col is None or max_row is None:
+            issues.append(
+                self._issue(
+                    "V2_TABLE_RANGE", "T_REFERENCE_MAP", "入力表の範囲には行と列を指定してください"
+                )
+            )
+            return
         headers = {
             str(table_sheet.cell(min_row, column).value).strip(): column
             for column in range(min_col, max_col + 1)
@@ -141,9 +149,13 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
             return super()._read_teachers(rows, campus_by_name, issues)
         result: list[TeacherModel] = []
         for index, row in enumerate(rows, start=1):
-            internal_id = self._required_text(row.get("内部ID"), "T_TEACHERS", f"行{index}/内部ID", issues)
+            internal_id = self._required_text(
+                row.get("内部ID"), "T_TEACHERS", f"行{index}/内部ID", issues
+            )
             label = self._required_text(row.get("教師"), "T_TEACHERS", f"行{index}/教師", issues)
-            campus_id = self._resolve_name(row.get("主校舎"), campus_by_name, "校舎", "T_TEACHERS", index, issues)
+            campus_id = self._resolve_name(
+                row.get("主校舎"), campus_by_name, "校舎", "T_TEACHERS", index, issues
+            )
             enabled = self._required_yes_no(row.get("使用"), "T_TEACHERS", f"行{index}", issues)
             if internal_id is None or label is None or campus_id is None or enabled is None:
                 continue
@@ -158,7 +170,13 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
                 )
                 continue
             if internal_id not in self._teacher_output_name_by_id:
-                issues.append(self._issue("V2_REFERENCE_NOT_FOUND", internal_id, f"教師参照が見つかりません: {internal_id}"))
+                issues.append(
+                    self._issue(
+                        "V2_REFERENCE_NOT_FOUND",
+                        internal_id,
+                        f"教師参照が見つかりません: {internal_id}",
+                    )
+                )
                 continue
             result.append(
                 TeacherModel(
@@ -179,7 +197,9 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
             return super()._read_subjects(rows, issues)
         result: list[SubjectModel] = []
         for index, row in enumerate(rows, start=1):
-            internal_id = self._required_text(row.get("内部ID"), "T_SUBJECTS", f"行{index}/内部ID", issues)
+            internal_id = self._required_text(
+                row.get("内部ID"), "T_SUBJECTS", f"行{index}/内部ID", issues
+            )
             label = self._required_text(row.get("教科"), "T_SUBJECTS", f"行{index}/教科", issues)
             type_display = self._required_text(row.get("種別"), "T_SUBJECTS", f"行{index}", issues)
             lesson_type = self._lesson_type_to_internal.get(
@@ -200,7 +220,13 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
                 )
                 continue
             if internal_id not in self._subject_output_name_by_id:
-                issues.append(self._issue("V2_REFERENCE_NOT_FOUND", internal_id, f"教科参照が見つかりません: {internal_id}"))
+                issues.append(
+                    self._issue(
+                        "V2_REFERENCE_NOT_FOUND",
+                        internal_id,
+                        f"教科参照が見つかりません: {internal_id}",
+                    )
+                )
                 continue
             result.append(
                 SubjectModel(
@@ -224,12 +250,24 @@ class ReferenceLabelExcelInputV2ReaderAdapter(ExcelInputV2ReaderAdapter):
             item_ids = {id_getter(item) for item in items}
             missing = set(self._teacher_label_to_id.values()).difference(item_ids)
             for internal_id in sorted(missing):
-                issues.append(self._issue("V2_REFERENCE_NOT_FOUND", internal_id, f"教師マスタに内部IDがありません: {internal_id}"))
+                issues.append(
+                    self._issue(
+                        "V2_REFERENCE_NOT_FOUND",
+                        internal_id,
+                        f"教師マスタに内部IDがありません: {internal_id}",
+                    )
+                )
             return dict(self._teacher_label_to_id)
         if label == "教科" and self._subject_label_to_id is not None:
             item_ids = {id_getter(item) for item in items}
             missing = set(self._subject_label_to_id.values()).difference(item_ids)
             for internal_id in sorted(missing):
-                issues.append(self._issue("V2_REFERENCE_NOT_FOUND", internal_id, f"教科マスタに内部IDがありません: {internal_id}"))
+                issues.append(
+                    self._issue(
+                        "V2_REFERENCE_NOT_FOUND",
+                        internal_id,
+                        f"教科マスタに内部IDがありません: {internal_id}",
+                    )
+                )
             return dict(self._subject_label_to_id)
         return super()._unique_name_map(items, name_getter, id_getter, label, issues)

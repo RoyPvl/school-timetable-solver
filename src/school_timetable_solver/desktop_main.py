@@ -17,7 +17,9 @@ def main() -> int:
     data_location = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppLocalDataLocation
     )
-    data_directory = Path(data_location) if data_location else Path.home() / ".school-timetable-solver"
+    data_directory = (
+        Path(data_location) if data_location else Path.home() / ".school-timetable-solver"
+    )
     window = DesktopApplicationComposition().create_desktop_window(data_directory)
     window.show()
     return app.exec()

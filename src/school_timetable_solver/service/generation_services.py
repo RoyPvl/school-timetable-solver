@@ -6,6 +6,7 @@ from school_timetable_solver.model.input_models import GenerationMode, InputData
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
     GenerationResultModel,
+    InputReadResultModel,
     ScheduledLessonModel,
     ValidationIssueModel,
     ValidationReportModel,
@@ -88,11 +89,25 @@ class ValidateInputService:
 
 
 class GenerateTimetableService:
+    """Excel boundary for the shared generation use case."""
+
+    def __init__(self, input_reader: InputReader, generator: GenerateFromInputDataService) -> None:
+        self._input_reader = input_reader
+        self._generator = generator
+
+    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
+        if request.input_path.resolve() == request.output_path.resolve():
+            read_result = InputReadResultModel(None, ())
+        else:
+            read_result = self._input_reader.read(request.input_path)
+        return self._generator.execute(request, read_result)
+
+
+class GenerateFromInputDataService:
     """Coordinate validation, strict solving, independent verification, and output."""
 
     def __init__(
         self,
-        input_reader: InputReader,
         validators: tuple[InputValidator, ...],
         rule_resolver: RuleResolverService,
         candidate_builder: CandidateBuilderService,
@@ -103,7 +118,6 @@ class GenerateTimetableService:
         document_builder: BuildTimetableDocumentService,
         output_writer: TimetableWriter,
     ) -> None:
-        self._input_reader = input_reader
         self._validators = validators
         self._rule_resolver = rule_resolver
         self._candidate_builder = candidate_builder
@@ -114,7 +128,9 @@ class GenerateTimetableService:
         self._document_builder = document_builder
         self._output_writer = output_writer
 
-    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
+    def execute(
+        self, request: GenerationRequestModel, read_result: InputReadResultModel
+    ) -> GenerationResultModel:
         LOGGER.info(
             (
                 "実行開始 input=%s output=%s mode=%s max_seconds=%s "
@@ -142,7 +158,6 @@ class GenerateTimetableService:
                     )
                 ],
             )
-        read_result = self._input_reader.read(request.input_path)
         issues = list(read_result.issues)
         for issue in issues:
             if issue.severity == "WARNING":

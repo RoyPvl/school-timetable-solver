@@ -49,7 +49,9 @@ class ExcelV2WorkbookPostprocessor:
             workbook.close()
 
     def _fill_direct_class_rule_campuses(self, workbook: Any, data: InputDataModel) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "06_基本配置ルール", "T_PLACEMENT_RULES")
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "06_基本配置ルール", "T_PLACEMENT_RULES"
+        )
         class_by_id = {item.class_id: item for item in data.classes}
         campus_name_by_id = {item.campus_id: item.campus_name for item in data.campuses}
         rule_by_id = {item.rule_id: item for item in data.placement_rules}
@@ -144,7 +146,9 @@ class ExcelV2WorkbookPostprocessor:
         self._rewrite_lesson_count_targets(workbook, data, subject_labels, soft=False)
         self._rewrite_lesson_count_targets(workbook, data, subject_labels, soft=True)
 
-    def _rewrite_teacher_master(self, workbook: Any, data: InputDataModel, labels: dict[str, str]) -> None:
+    def _rewrite_teacher_master(
+        self, workbook: Any, data: InputDataModel, labels: dict[str, str]
+    ) -> None:
         worksheet, headers, min_row, max_row = self._table(workbook, "03_教師", "T_TEACHERS")
         model_by_id = {item.teacher_id: item for item in data.teachers}
         for row in range(min_row + 1, max_row + 1):
@@ -158,8 +162,12 @@ class ExcelV2WorkbookPostprocessor:
         header_cell.value = "出力表示名"
         header_cell.fill = self.AUTO_FILL
 
-    def _rewrite_subject_master(self, workbook: Any, data: InputDataModel, labels: dict[str, str]) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "04_クラス・授業", "T_SUBJECTS")
+    def _rewrite_subject_master(
+        self, workbook: Any, data: InputDataModel, labels: dict[str, str]
+    ) -> None:
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "04_クラス・授業", "T_SUBJECTS"
+        )
         model_by_id = {item.subject_id: item for item in data.subjects}
         for row in range(min_row + 1, max_row + 1):
             internal_id = str(worksheet.cell(row, headers["内部ID"]).value)
@@ -172,7 +180,9 @@ class ExcelV2WorkbookPostprocessor:
         header_cell.value = "出力表示名"
         header_cell.fill = self.AUTO_FILL
 
-    def _rewrite_classes(self, workbook: Any, data: InputDataModel, teacher_labels: dict[str, str]) -> None:
+    def _rewrite_classes(
+        self, workbook: Any, data: InputDataModel, teacher_labels: dict[str, str]
+    ) -> None:
         worksheet, headers, min_row, max_row = self._table(workbook, "04_クラス・授業", "T_CLASSES")
         model_by_id = {item.class_id: item for item in data.classes}
         for row in range(min_row + 1, max_row + 1):
@@ -193,7 +203,9 @@ class ExcelV2WorkbookPostprocessor:
         teacher_labels: dict[str, str],
         subject_labels: dict[str, str],
     ) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "04_クラス・授業", "T_LESSON_REQUIREMENTS")
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "04_クラス・授業", "T_LESSON_REQUIREMENTS"
+        )
         model_by_id = {item.requirement_id: item for item in data.lesson_requirements}
         for row in range(min_row + 1, max_row + 1):
             internal_id = str(worksheet.cell(row, headers["内部ID"]).value)
@@ -203,16 +215,24 @@ class ExcelV2WorkbookPostprocessor:
             worksheet.cell(row, headers["教師"]).value = teacher_labels[model.teacher_id]
             worksheet.cell(row, headers["教科"]).value = subject_labels[model.subject_id]
 
-    def _rewrite_teacher_leaves(self, workbook: Any, data: InputDataModel, labels: dict[str, str]) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "05_教師条件", "T_TEACHER_LEAVES")
+    def _rewrite_teacher_leaves(
+        self, workbook: Any, data: InputDataModel, labels: dict[str, str]
+    ) -> None:
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "05_教師条件", "T_TEACHER_LEAVES"
+        )
         excel_rows = list(range(min_row + 1, max_row + 1))
         if len(excel_rows) != len(data.teacher_leaves):
             raise ValueError("T_TEACHER_LEAVES row count does not match source model")
         for row, model in zip(excel_rows, data.teacher_leaves, strict=True):
             worksheet.cell(row, headers["教師"]).value = labels[model.teacher_id]
 
-    def _rewrite_day_off_rules(self, workbook: Any, data: InputDataModel, labels: dict[str, str]) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "05_教師条件", "T_TEACHER_DAY_OFF_RULES")
+    def _rewrite_day_off_rules(
+        self, workbook: Any, data: InputDataModel, labels: dict[str, str]
+    ) -> None:
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "05_教師条件", "T_TEACHER_DAY_OFF_RULES"
+        )
         model_by_id = {item.rule_id: item for item in data.teacher_day_off_rules}
         for row in range(min_row + 1, max_row + 1):
             internal_id = str(worksheet.cell(row, headers["内部ID"]).value)
@@ -220,8 +240,12 @@ class ExcelV2WorkbookPostprocessor:
             if model is not None:
                 worksheet.cell(row, headers["教師"]).value = labels[model.teacher_id]
 
-    def _rewrite_placement_rules(self, workbook: Any, data: InputDataModel, labels: dict[str, str]) -> None:
-        worksheet, headers, min_row, max_row = self._table(workbook, "06_基本配置ルール", "T_PLACEMENT_RULES")
+    def _rewrite_placement_rules(
+        self, workbook: Any, data: InputDataModel, labels: dict[str, str]
+    ) -> None:
+        worksheet, headers, min_row, max_row = self._table(
+            workbook, "06_基本配置ルール", "T_PLACEMENT_RULES"
+        )
         model_by_id = {item.rule_id: item for item in data.placement_rules}
         for row in range(min_row + 1, max_row + 1):
             internal_id = str(worksheet.cell(row, headers["内部ID"]).value)
@@ -251,9 +275,7 @@ class ExcelV2WorkbookPostprocessor:
         soft: bool,
     ) -> None:
         segments = (
-            data.lesson_count_preference_rule_segments
-            if soft
-            else data.lesson_count_rule_segments
+            data.lesson_count_preference_rule_segments if soft else data.lesson_count_rule_segments
         )
         table_name = "T_LESSON_COUNT_SOFT_TARGETS" if soft else "T_LESSON_COUNT_HARD_TARGETS"
         worksheet, headers, min_row, max_row = self._table(workbook, "07_個別ルール", table_name)
@@ -264,7 +286,9 @@ class ExcelV2WorkbookPostprocessor:
         for row, subject_id in zip(excel_rows, expected_subject_ids, strict=True):
             worksheet.cell(row, headers["教科"]).value = subject_labels[subject_id]
 
-    def _grouped_target_subject_ids(self, data: InputDataModel, segments: Iterable[Any]) -> list[str]:
+    def _grouped_target_subject_ids(
+        self, data: InputDataModel, segments: Iterable[Any]
+    ) -> list[str]:
         by_rule: dict[str, list[Any]] = defaultdict(list)
         for segment in segments:
             by_rule[segment.rule_id].append(segment)
@@ -279,10 +303,17 @@ class ExcelV2WorkbookPostprocessor:
                 first.rule_name,
                 first.enabled,
                 count,
-                tuple((item.start_date, item.end_date, tuple(item.target_period_ids)) for item in ordered),
+                tuple(
+                    (item.start_date, item.end_date, tuple(item.target_period_ids))
+                    for item in ordered
+                ),
             )
             signature_groups[signature].append((first.class_id, first.subject_id))
-        return [subject_id for target_pairs in signature_groups.values() for _, subject_id in target_pairs]
+        return [
+            subject_id
+            for target_pairs in signature_groups.values()
+            for _, subject_id in target_pairs
+        ]
 
     def _write_reference_map(
         self,
@@ -326,26 +357,46 @@ class ExcelV2WorkbookPostprocessor:
     def _write_reference_guidance(workbook: Any) -> None:
         intro = workbook["00_最初に読む"]
         row = intro.max_row + 2
-        intro.cell(row, 1, "・教師・教科は『入力用ラベル』で選択します。入力用ラベルは出力表示名とは別で、出力名が空欄の枠も一意に選択できます。")
-        intro.cell(row + 1, 1, "・教師・教科のラベル文字列から意味を推測しないでください。内部IDとの対応は _system の参照マップが正本です。")
+        intro.cell(
+            row,
+            1,
+            "・教師・教科は『入力用ラベル』で選択します。入力用ラベルは出力表示名とは別で、出力名が空欄の枠も一意に選択できます。",
+        )
+        intro.cell(
+            row + 1,
+            1,
+            "・教師・教科のラベル文字列から意味を推測しないでください。内部IDとの対応は _system の参照マップが正本です。",
+        )
         for target_row in (row, row + 1):
             intro.cell(target_row, 1).alignment = Alignment(wrap_text=True, vertical="top")
 
         guide = workbook["90_AI編集ガイド"]
         row = guide.max_row + 2
         guide.cell(row, 1, "参照ラベル")
-        guide.cell(row, 2, "教師・教科の入力用ラベル、内部ID、出力表示名は別概念。ラベルを解析せず _system/T_REFERENCE_MAP の明示対応を使う。")
+        guide.cell(
+            row,
+            2,
+            "教師・教科の入力用ラベル、内部ID、出力表示名は別概念。ラベルを解析せず _system/T_REFERENCE_MAP の明示対応を使う。",
+        )
         guide.cell(row + 1, 1, "出力名が空欄の枠")
-        guide.cell(row + 1, 2, "入力Excelでは一意な入力用ラベルを持つが、出力表示名は空欄のまま。『(空欄)』という参照トークンでは識別しない。")
+        guide.cell(
+            row + 1,
+            2,
+            "入力Excelでは一意な入力用ラベルを持つが、出力表示名は空欄のまま。『(空欄)』という参照トークンでは識別しない。",
+        )
         for target_row in (row, row + 1):
             guide.cell(target_row, 1).alignment = Alignment(wrap_text=True, vertical="top")
             guide.cell(target_row, 2).alignment = Alignment(wrap_text=True, vertical="top")
 
     @staticmethod
-    def _table(workbook: Any, sheet_name: str, table_name: str) -> tuple[Any, dict[str, int], int, int]:
+    def _table(
+        workbook: Any, sheet_name: str, table_name: str
+    ) -> tuple[Any, dict[str, int], int, int]:
         worksheet = workbook[sheet_name]
         table = worksheet.tables[table_name]
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_col is None or min_row is None or max_col is None or max_row is None:
+            raise ValueError(f"{table_name} requires a bounded cell range: {table.ref}")
         headers = {
             str(worksheet.cell(min_row, column).value): column
             for column in range(min_col, max_col + 1)

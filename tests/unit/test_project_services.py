@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
+from school_timetable_solver.adapter.excel_input_router import CompatibleExcelInputReaderAdapter
 from school_timetable_solver.adapter.project_store_adapter import LocalProjectStoreAdapter
+from school_timetable_solver.composition import ApplicationComposition
 from school_timetable_solver.model.input_models import (
     GenerationMode,
     InputDataModel,
@@ -15,11 +15,13 @@ from school_timetable_solver.model.project_models import (
     ProjectSource,
 )
 from school_timetable_solver.model.result_models import (
-    GenerationRequestModel,
-    GenerationResultModel,
     InputReadResultModel,
     ValidationIssueModel,
-    ValidationReportModel,
+)
+from school_timetable_solver.service.project_document_services import (
+    BuildProjectInputService,
+    ImportProjectDocumentService,
+    LoadProjectDocumentService,
 )
 from school_timetable_solver.service.project_services import (
     CreateProjectService,
@@ -27,6 +29,7 @@ from school_timetable_solver.service.project_services import (
     ExecuteProjectService,
     ImportProjectService,
 )
+from school_timetable_solver.validator.input_validators import ProjectDocumentValidator
 
 
 class SuccessfulInputReader:
@@ -62,23 +65,6 @@ class FailedInputReader:
         )
 
 
-class RecordingGenerator:
-    def __init__(self) -> None:
-        self.request: GenerationRequestModel | None = None
-
-    def execute(self, request: GenerationRequestModel) -> GenerationResultModel:
-        self.request = request
-        return GenerationResultModel(
-            status="VALIDATED",
-            exit_code=0,
-            request=request,
-            input_data=None,
-            lessons=(),
-            validation_report=ValidationReportModel(()),
-            solver_statistics=None,
-        )
-
-
 class RecordingExecutionLogger:
     def __init__(self) -> None:
         self.path: Path | None = None
@@ -106,7 +92,9 @@ def test_import_project_uses_workbook_metadata_and_copies_file(tmp_path: Path) -
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
 
-    result = ImportProjectService(store, SuccessfulInputReader()).execute(source)
+    result = ImportProjectService(
+        store, SuccessfulInputReader(), ImportProjectDocumentService()
+    ).execute(source)
 
     assert result.project is not None
     assert result.project.name == "2026 夏期講習"
@@ -122,7 +110,9 @@ def test_import_project_does_not_save_invalid_workbook(tmp_path: Path) -> None:
     source = tmp_path / "invalid.xlsx"
     source.write_bytes(b"invalid")
 
-    result = ImportProjectService(store, FailedInputReader()).execute(source)
+    result = ImportProjectService(
+        store, FailedInputReader(), ImportProjectDocumentService()
+    ).execute(source)
 
     assert result.project is None
     assert result.issues[0].rule_id == "TEST_IMPORT_ERROR"
@@ -134,7 +124,11 @@ def test_duplicate_project_copies_imported_workbook(tmp_path: Path) -> None:
     store.initialize()
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
-    imported = ImportProjectService(store, SuccessfulInputReader()).execute(source).project
+    imported = (
+        ImportProjectService(store, SuccessfulInputReader(), ImportProjectDocumentService())
+        .execute(source)
+        .project
+    )
     assert imported is not None
 
     duplicate = DuplicateProjectService(store).execute(imported.project_id)
@@ -147,59 +141,75 @@ def test_duplicate_project_copies_imported_workbook(tmp_path: Path) -> None:
     assert duplicate.imported_workbook_path.read_bytes() == b"workbook"
 
 
-def test_execute_project_maps_gui_settings_to_generation_request(tmp_path: Path) -> None:
+def test_execute_project_maps_gui_settings_to_generation_request(
+    tmp_path: Path, minimal_input_data: InputDataModel
+) -> None:
     store = LocalProjectStoreAdapter(tmp_path / "app-data")
     store.initialize()
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
-    project = ImportProjectService(store, SuccessfulInputReader()).execute(source).project
+    project = (
+        ImportProjectService(store, SuccessfulInputReader(), ImportProjectDocumentService())
+        .execute(source)
+        .project
+    )
     assert project is not None
     assert project.imported_workbook_path is not None
 
-    generator = RecordingGenerator()
+    document = ImportProjectDocumentService().execute(minimal_input_data)
+    document.revision = 1
+    store.save_document(project.project_id, document)
+    generator = ApplicationComposition().create_generate_from_input_data_service()
     execution_logger = RecordingExecutionLogger()
     settings = ProjectExecutionSettingsModel(
         output_path=tmp_path / "result.xlsx",
         log_path=tmp_path / "run.log",
-        solve_mode=GenerationMode.STRICT,
+        solve_mode=GenerationMode.VALIDATE_ONLY,
         max_solve_seconds=120.0,
         random_seed=7,
         num_search_workers=4,
     )
 
-    result = ExecuteProjectService(store, generator, execution_logger).execute(
+    result = ExecuteProjectService(
+        store,
+        generator,
+        LoadProjectDocumentService(
+            store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+        ),
+        BuildProjectInputService(ProjectDocumentValidator()),
+        execution_logger,
+    ).execute(
         project.project_id,
         settings,
     )
 
     assert result.exit_code == 0
-    assert generator.request is not None
-    assert generator.request.input_path == project.imported_workbook_path
-    assert generator.request.output_path == settings.output_path
-    assert generator.request.log_path == settings.log_path
-    assert generator.request.solve_mode is GenerationMode.STRICT
-    assert generator.request.max_solve_seconds == 120.0
-    assert generator.request.random_seed == 7
-    assert generator.request.num_search_workers == 4
+    assert result.request.input_path == project.imported_workbook_path
+    assert result.request.output_path == settings.output_path
+    assert result.request.log_path == settings.log_path
+    assert result.request.solve_mode is settings.solve_mode
+    assert result.request.max_solve_seconds == 120.0
+    assert result.request.random_seed == 7
+    assert result.request.num_search_workers == 4
     assert execution_logger.path == settings.log_path
 
 
-def test_execute_blank_project_rejects_missing_runnable_input(tmp_path: Path) -> None:
+def test_execute_blank_project_returns_input_issues_without_output(tmp_path: Path) -> None:
     store = LocalProjectStoreAdapter(tmp_path)
     store.initialize()
     project = CreateProjectService(store).execute()
     settings = ProjectExecutionSettingsModel(
-        output_path=tmp_path / "result.xlsx",
-        log_path=None,
-        solve_mode=GenerationMode.VALIDATE_ONLY,
-        max_solve_seconds=60.0,
-        random_seed=1,
-        num_search_workers=8,
+        tmp_path / "result.xlsx", None, GenerationMode.VALIDATE_ONLY, 60.0, 1, 1
     )
-
-    with pytest.raises(ValueError, match="実行可能な入力"):
-        ExecuteProjectService(
-            store,
-            RecordingGenerator(),
-            RecordingExecutionLogger(),
-        ).execute(project.project_id, settings)
+    result = ExecuteProjectService(
+        store,
+        ApplicationComposition().create_generate_from_input_data_service(),
+        LoadProjectDocumentService(
+            store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+        ),
+        BuildProjectInputService(ProjectDocumentValidator()),
+        RecordingExecutionLogger(),
+    ).execute(project.project_id, settings)
+    assert result.exit_code == 2
+    assert any(issue.rule_id == "OUTPUT_DATE_REQUIRED" for issue in result.validation_report.issues)
+    assert not settings.output_path.exists()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterable
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from school_timetable_solver.model.input_models import (
     InputDataModel,
@@ -10,6 +10,7 @@ from school_timetable_solver.model.input_models import (
     LessonCountRuleSegmentModel,
     TeacherDayOffRuleModel,
 )
+from school_timetable_solver.model.project_document_models import ProjectDocumentModel
 from school_timetable_solver.model.result_models import ValidationIssueModel
 from school_timetable_solver.model.solver_models import (
     CandidateBuildResultModel,
@@ -1381,3 +1382,196 @@ class CapacityFeasibilityValidator:
 
 InputValidator = ReferenceIntegrityValidator
 DEFAULT_INPUT_VALIDATORS: tuple[InputValidator, ...] = (ReferenceIntegrityValidator(),)
+
+
+class ProjectDocumentValidator:
+    """Validate draft field formats before constructing the solver input model."""
+
+    def validate(self, document: ProjectDocumentModel) -> list[ValidationIssueModel]:
+        issues: list[ValidationIssueModel] = []
+        for index, row in enumerate(document.calendar_days):
+            fields = (
+                ("target_date", row.target_date, "date", True),
+                ("note", row.note, "text", False),
+            )
+            issues.extend(self._validate_fields("calendar_days", index, fields))
+        for index, row in enumerate(document.periods):
+            fields = (
+                ("period_id", row.period_id, "text", True),
+                ("period_name", row.period_name, "text", True),
+                ("output_order", row.output_order, "integer", True),
+                ("start_time", row.start_time, "time", True),
+                ("end_time", row.end_time, "time", True),
+            )
+            issues.extend(self._validate_fields("periods", index, fields))
+        for index, row in enumerate(document.campuses):
+            fields = (
+                ("campus_id", row.campus_id, "text", True),
+                ("campus_name", row.campus_name, "text", True),
+                ("output_order", row.output_order, "integer", True),
+            )
+            issues.extend(self._validate_fields("campuses", index, fields))
+        for index, row in enumerate(document.rooms):
+            fields = (
+                ("room_id", row.room_id, "text", True),
+                ("room_name", row.room_name, "text", True),
+                ("campus_id", row.campus_id, "text", True),
+                ("output_order", row.output_order, "integer", True),
+                ("priority", row.priority, "integer", True),
+            )
+            issues.extend(self._validate_fields("rooms", index, fields))
+        for index, row in enumerate(document.teachers):
+            fields = (
+                ("teacher_id", row.teacher_id, "text", True),
+                ("teacher_name", row.teacher_name, "text", False),
+                ("home_campus_id", row.home_campus_id, "text", True),
+            )
+            issues.extend(self._validate_fields("teachers", index, fields))
+        for index, row in enumerate(document.classes):
+            fields = (
+                ("class_id", row.class_id, "text", True),
+                ("class_name", row.class_name, "text", True),
+                ("campus_id", row.campus_id, "text", True),
+                ("division", row.division, "text", True),
+                ("grade", row.grade, "integer", True),
+                ("exam_category", row.exam_category, "text", True),
+                ("homeroom_teacher_id", row.homeroom_teacher_id, "text", False),
+            )
+            issues.extend(self._validate_fields("classes", index, fields))
+        for index, row in enumerate(document.subjects):
+            fields = (
+                ("subject_id", row.subject_id, "text", True),
+                ("subject_name", row.subject_name, "text", False),
+                ("lesson_type", row.lesson_type, "text", True),
+            )
+            issues.extend(self._validate_fields("subjects", index, fields))
+        for index, row in enumerate(document.lesson_requirements):
+            if not row.enabled:
+                continue
+            fields = (
+                ("requirement_id", row.requirement_id, "text", True),
+                ("class_id", row.class_id, "text", True),
+                ("subject_id", row.subject_id, "text", True),
+                ("teacher_id", row.teacher_id, "text", True),
+                ("required_periods", row.required_periods, "integer", True),
+                ("max_periods_per_day", row.max_periods_per_day, "integer", False),
+            )
+            issues.extend(self._validate_fields("lesson_requirements", index, fields))
+        for index, row in enumerate(document.teacher_leaves):
+            fields = (
+                ("teacher_id", row.teacher_id, "text", True),
+                ("target_date", row.target_date, "date", True),
+            )
+            issues.extend(self._validate_fields("teacher_leaves", index, fields))
+        for index, row in enumerate(document.placement_rules):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("rule_name", row.rule_name, "text", True),
+                ("constraint_type", row.constraint_type, "text", True),
+                ("target_entity", row.target_entity, "text", True),
+                ("campus_id", row.campus_id, "text", False),
+                ("start_date", row.start_date, "date", False),
+                ("end_date", row.end_date, "date", False),
+                ("daily_hard_limit", row.daily_hard_limit, "integer", False),
+                ("forbid_first_last_same_day", row.forbid_first_last_same_day, "boolean", False),
+                ("attendance_streak_limit", row.attendance_streak_limit, "integer", False),
+                ("priority", row.priority, "integer", True),
+                (
+                    "preferred_attendance_streak_limit",
+                    row.preferred_attendance_streak_limit,
+                    "integer",
+                    False,
+                ),
+            )
+            issues.extend(self._validate_fields("placement_rules", index, fields))
+        for index, row in enumerate(document.lesson_count_rule_segments):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("segment_id", row.segment_id, "text", True),
+                ("rule_name", row.rule_name, "text", True),
+                ("class_id", row.class_id, "text", True),
+                ("subject_id", row.subject_id, "text", True),
+                ("exact_periods", row.exact_periods, "integer", True),
+                ("start_date", row.start_date, "date", True),
+                ("end_date", row.end_date, "date", True),
+            )
+            issues.extend(self._validate_fields("lesson_count_rule_segments", index, fields))
+        for index, row in enumerate(document.lesson_count_preference_rule_segments):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("segment_id", row.segment_id, "text", True),
+                ("rule_name", row.rule_name, "text", True),
+                ("class_id", row.class_id, "text", True),
+                ("subject_id", row.subject_id, "text", True),
+                ("preferred_periods", row.preferred_periods, "integer", True),
+                ("start_date", row.start_date, "date", True),
+                ("end_date", row.end_date, "date", True),
+            )
+            issues.extend(
+                self._validate_fields("lesson_count_preference_rule_segments", index, fields)
+            )
+        for index, row in enumerate(document.teacher_day_off_rules):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("teacher_id", row.teacher_id, "text", True),
+                ("eligible_dates", row.eligible_dates, "dates", True),
+                ("required_days_off", row.required_days_off, "integer", False),
+                ("minimum_days_off", row.minimum_days_off, "integer", False),
+                ("maximum_days_off", row.maximum_days_off, "integer", False),
+                ("quota_group_id", row.quota_group_id, "text", False),
+                ("group_required_days_off", row.group_required_days_off, "integer", False),
+                ("preferred_days_off", row.preferred_days_off, "integer", False),
+            )
+            issues.extend(self._validate_fields("teacher_day_off_rules", index, fields))
+        for index, row in enumerate(document.homeroom_boundary_rules):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("rule_name", row.rule_name, "text", True),
+                ("start_date", row.start_date, "date", True),
+                ("end_date", row.end_date, "date", True),
+            )
+            issues.extend(self._validate_fields("homeroom_boundary_rules", index, fields))
+        for index, row in enumerate(document.class_pair_overlap_rules):
+            fields = (
+                ("rule_id", row.rule_id, "text", True),
+                ("rule_name", row.rule_name, "text", True),
+                ("first_class_id", row.first_class_id, "text", True),
+                ("second_class_id", row.second_class_id, "text", True),
+            )
+            issues.extend(self._validate_fields("class_pair_overlap_rules", index, fields))
+        return issues
+
+    def _validate_fields(
+        self, group: str, index: int, fields: tuple[tuple[str, str, str, bool], ...]
+    ) -> list[ValidationIssueModel]:
+        issues = []
+        for name, value, kind, required in fields:
+            value = value.strip()
+            target = f"{group}[{index + 1}].{name}"
+            if not value:
+                if required:
+                    issues.append(
+                        ValidationIssueModel(
+                            "DOCUMENT_FIELD_REQUIRED", "ERROR", target, "必須項目が未入力です"
+                        )
+                    )
+                continue
+            try:
+                if kind == "integer":
+                    int(value)
+                elif kind == "date":
+                    date.fromisoformat(value)
+                elif kind == "time":
+                    time.fromisoformat(value)
+                elif kind == "dates":
+                    for part in value.split("|"):
+                        date.fromisoformat(part.strip())
+                elif kind == "boolean" and value not in {"true", "false"}:
+                    raise ValueError("true / false を選択してください")
+            except ValueError:
+                issues.append(
+                    ValidationIssueModel(
+                        "DOCUMENT_FIELD_FORMAT", "ERROR", target, f"入力形式が不正です: {value}"
+                    )
+                )
+        return issues

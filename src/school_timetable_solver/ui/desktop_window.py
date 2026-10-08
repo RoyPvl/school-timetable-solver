@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -72,13 +73,6 @@ class ProjectCardWidget(QFrame):
         layout.addWidget(open_button, 1)
 
         run_button = QPushButton("実行")
-        can_run = (
-            project.imported_workbook_path is not None
-            and project.imported_workbook_path.is_file()
-        )
-        run_button.setEnabled(can_run)
-        if not can_run:
-            run_button.setToolTip("Editor入力の保存機能を実装後に実行可能になります")
         run_button.clicked.connect(
             lambda _checked=False: self.run_requested.emit(project.project_id)
         )
@@ -385,6 +379,25 @@ class RunProjectWorker(QObject):
         self.completed.emit(result)
 
 
+class ProjectRunResultReceiver(QObject):
+    """Own the GUI-thread slots independently of window method overrides."""
+
+    def __init__(
+        self, parent: QObject, completed: Callable[[object], None], failed: Callable[[str], None]
+    ) -> None:
+        super().__init__(parent)
+        self._completed = completed
+        self._failed = failed
+
+    @Slot(object)
+    def complete(self, result: object) -> None:
+        self._completed(result)
+
+    @Slot(str)
+    def fail(self, message: str) -> None:
+        self._failed(message)
+
+
 class DesktopWindow(QMainWindow):
     def __init__(
         self,
@@ -406,6 +419,7 @@ class DesktopWindow(QMainWindow):
         self._duplicate_project = duplicate_project
         self._delete_project = delete_project
         self._execute_project = execute_project
+        self._run_receiver = ProjectRunResultReceiver(self, self._run_completed, self._run_failed)
         self._run_thread: QThread | None = None
         self._run_worker: RunProjectWorker | None = None
         self._run_progress: QProgressDialog | None = None
@@ -483,24 +497,22 @@ class DesktopWindow(QMainWindow):
             QMessageBox.warning(self, "実行エラー", "保存済みデータが見つかりません。")
             self._refresh_home()
             return
-        if project.imported_workbook_path is None or not project.imported_workbook_path.is_file():
-            QMessageBox.information(
-                self,
-                "実行できません",
-                "このデータには実行可能な入力がまだありません。",
-            )
-            return
-
         dialog = RunProjectDialog(project, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         settings = dialog.values()
 
+        self._start_project_run(project_id, settings)
+
+    def _start_project_run(self, project_id: str, settings: ProjectExecutionSettingsModel) -> None:
+        if self._run_thread is not None:
+            QMessageBox.information(self, "実行中", "別の時間割を実行中です。")
+            return
         thread = QThread(self)
         worker = RunProjectWorker(self._execute_project, project_id, settings)
         worker.moveToThread(thread)
-        worker.completed.connect(self._run_completed)
-        worker.failed.connect(self._run_failed)
+        worker.completed.connect(self._run_receiver.complete, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._run_receiver.fail, Qt.ConnectionType.QueuedConnection)
         worker.completed.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         worker.completed.connect(thread.quit)
@@ -510,11 +522,10 @@ class DesktopWindow(QMainWindow):
 
         self._run_thread = thread
         self._run_worker = worker
-        self._run_progress = QProgressDialog(self)
+        self._run_progress = QProgressDialog("時間割を生成しています...", "", 0, 0, self)
         self._run_progress.setWindowTitle("時間割を実行")
         self._run_progress.setLabelText("時間割を生成しています...")
         self._run_progress.setRange(0, 0)
-        self._run_progress.setCancelButton(None)
         self._run_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._run_progress.setMinimumDuration(0)
         self._run_progress.show()
@@ -534,9 +545,7 @@ class DesktopWindow(QMainWindow):
             return
 
         errors = [
-            issue.message
-            for issue in result.validation_report.issues
-            if issue.severity == "ERROR"
+            issue.message for issue in result.validation_report.issues if issue.severity == "ERROR"
         ]
         details = "\n".join(errors[:5])
         message = f"実行は完了しましたが、時間割を出力できませんでした。\nstatus: {result.status}"

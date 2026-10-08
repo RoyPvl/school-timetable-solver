@@ -1,16 +1,51 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 from school_timetable_solver.adapter.excel_input_router import CompatibleExcelInputReaderAdapter
+from school_timetable_solver.adapter.excel_input_v2_entity_reference_adapter import (
+    EntityReferenceExcelInputV2ReaderAdapter,
+)
+from school_timetable_solver.adapter.excel_input_v2_reference_adapter import (
+    ReferenceLabelExcelInputV2ReaderAdapter,
+)
 from school_timetable_solver.adapter.excel_v2_reference_postprocessor import (
     ReferenceLabelExcelV2WorkbookPostprocessor,
 )
 from school_timetable_solver.adapter.excel_v2_workbook_adapter import ExcelV2WorkbookWriterAdapter
 from school_timetable_solver.model.input_models import ClassPairOverlapRuleModel, InputDataModel
+
+
+@pytest.mark.parametrize(
+    "reader_type",
+    [ReferenceLabelExcelInputV2ReaderAdapter, EntityReferenceExcelInputV2ReaderAdapter],
+)
+def test_v2_reference_map_rejects_range_without_row_or_column_bounds(
+    tmp_path: Path,
+    minimal_input_data: InputDataModel,
+    reader_type: type[ReferenceLabelExcelInputV2ReaderAdapter],
+) -> None:
+    path = tmp_path / "input_v2_invalid_reference_range.xlsx"
+    ExcelV2WorkbookWriterAdapter().write(path, minimal_input_data)
+    ReferenceLabelExcelV2WorkbookPostprocessor().execute(path, minimal_input_data)
+    workbook = load_workbook(path)
+    try:
+        workbook["_system"].tables["T_REFERENCE_MAP"].ref = "A:D"
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+    result = reader_type().read(path)
+
+    assert result.input_data is None
+    assert [(issue.rule_id, issue.severity, issue.target) for issue in result.issues] == [
+        ("V2_TABLE_RANGE", "ERROR", "T_REFERENCE_MAP")
+    ]
 
 
 def test_v2_reference_labels_distinguish_same_class_output_name_within_campus(
@@ -64,9 +99,10 @@ def test_v2_reference_labels_distinguish_same_class_output_name_within_campus(
         system_sheet = workbook["_system"]
         table = system_sheet.tables["T_REFERENCE_MAP"]
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        assert min_col is not None and min_row is not None
+        assert max_col is not None and max_row is not None
         headers = [
-            system_sheet.cell(min_row, column).value
-            for column in range(min_col, max_col + 1)
+            system_sheet.cell(min_row, column).value for column in range(min_col, max_col + 1)
         ]
         rows = [
             {
@@ -82,8 +118,7 @@ def test_v2_reference_labels_distinguish_same_class_output_name_within_campus(
         class_rows = {
             row["内部ID"]: row
             for row in rows
-            if row["参照種別"] == "class"
-            and row["内部ID"] in {ordinary.class_id, special.class_id}
+            if row["参照種別"] == "class" and row["内部ID"] in {ordinary.class_id, special.class_id}
         }
         assert class_rows[ordinary.class_id]["出力表示名"] == ordinary.class_name
         assert class_rows[special.class_id]["出力表示名"] == ordinary.class_name

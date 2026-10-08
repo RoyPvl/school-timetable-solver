@@ -13,13 +13,17 @@ from school_timetable_solver.model.project_models import (
 from school_timetable_solver.model.result_models import (
     GenerationRequestModel,
     GenerationResultModel,
-    InputReadResultModel,
+)
+from school_timetable_solver.service.generation_services import GenerateFromInputDataService
+from school_timetable_solver.service.project_document_services import (
+    BuildProjectInputService,
+    ImportProjectDocumentService,
+    LoadProjectDocumentService,
 )
 from school_timetable_solver.service.protocols import (
     ExecutionLogger,
     InputReader,
     ProjectStore,
-    TimetableGenerator,
 )
 
 
@@ -37,23 +41,6 @@ class LoadProjectService:
 
     def execute(self, project_id: str) -> ProjectModel | None:
         return self._project_store.load(project_id)
-
-
-class LoadProjectInputService:
-    """Read the current executable input snapshot for an imported desktop project."""
-
-    def __init__(self, project_store: ProjectStore, input_reader: InputReader) -> None:
-        self._project_store = project_store
-        self._input_reader = input_reader
-
-    def execute(self, project_id: str) -> InputReadResultModel:
-        project = self._project_store.load(project_id)
-        if project is None:
-            raise ValueError("保存済みデータが見つかりません")
-        input_path = project.imported_workbook_path
-        if input_path is None or not input_path.is_file():
-            return InputReadResultModel(input_data=None, issues=())
-        return self._input_reader.read(input_path)
 
 
 class CreateProjectService:
@@ -86,9 +73,15 @@ class CreateProjectService:
 
 
 class ImportProjectService:
-    def __init__(self, project_store: ProjectStore, input_reader: InputReader) -> None:
+    def __init__(
+        self,
+        project_store: ProjectStore,
+        input_reader: InputReader,
+        document_importer: ImportProjectDocumentService,
+    ) -> None:
         self._project_store = project_store
         self._input_reader = input_reader
+        self._document_importer = document_importer
 
     def execute(self, path: Path) -> ProjectImportResultModel:
         read_result = self._input_reader.read(path)
@@ -108,7 +101,8 @@ class ImportProjectService:
             created_at=now,
             updated_at=now,
         )
-        stored_project = self._project_store.create(project, path)
+        document = self._document_importer.execute(read_result.input_data)
+        stored_project = self._project_store.create(project, path, document)
         return ProjectImportResultModel(stored_project, read_result.issues)
 
 
@@ -146,7 +140,8 @@ class DuplicateProjectService:
             created_at=now,
             updated_at=now,
         )
-        return self._project_store.create(duplicate, source.imported_workbook_path)
+        document = self._project_store.load_document(project_id)
+        return self._project_store.create(duplicate, source.imported_workbook_path, document)
 
 
 class DeleteProjectService:
@@ -158,16 +153,20 @@ class DeleteProjectService:
 
 
 class ExecuteProjectService:
-    """Run an imported project with the existing generation use case."""
+    """Run a saved desktop draft through the shared generation use case."""
 
     def __init__(
         self,
         project_store: ProjectStore,
-        generator: TimetableGenerator,
+        generator: GenerateFromInputDataService,
+        load_document: LoadProjectDocumentService,
+        build_input: BuildProjectInputService,
         execution_logger: ExecutionLogger,
     ) -> None:
         self._project_store = project_store
         self._generator = generator
+        self._load_document = load_document
+        self._build_input = build_input
         self._execution_logger = execution_logger
 
     def execute(
@@ -178,9 +177,11 @@ class ExecuteProjectService:
         project = self._project_store.load(project_id)
         if project is None:
             raise ValueError("保存済みデータが見つかりません")
-        input_path = project.imported_workbook_path
-        if input_path is None or not input_path.is_file():
-            raise ValueError("このデータには実行可能な入力がまだありません")
+        document = self._load_document.execute(project_id)
+        read_result = self._build_input.execute(document, project)
+        input_path = (
+            project.imported_workbook_path or settings.output_path.parent / f"{project_id}.project"
+        )
 
         request = GenerationRequestModel(
             input_path=input_path,
@@ -192,4 +193,4 @@ class ExecuteProjectService:
             num_search_workers=settings.num_search_workers,
         )
         self._execution_logger.configure(settings.log_path)
-        return self._generator.execute(request)
+        return self._generator.execute(request, read_result)
