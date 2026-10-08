@@ -1,8 +1,26 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QResizeEvent
-from PySide6.QtWidgets import QComboBox, QDateEdit, QLabel, QTimeEdit
+from typing import Any
+
+from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtGui import QColor, QPainter, QPen, QResizeEvent
+from PySide6.QtWidgets import QComboBox, QDateEdit, QLabel, QStyledItemDelegate, QTimeEdit
+
+
+class EditorChoiceDelegate(QStyledItemDelegate):
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo)
+        self._combo = combo
+
+    def paint(self, painter: QPainter, option: Any, index: QModelIndex) -> None:
+        # Qt exposes rect at runtime; the bundled PySide6 style-option stub omits it.
+        super().paint(painter, option, index)
+        if index.row() == self._combo.currentIndex():
+            painter.save()
+            painter.setPen(QPen(QColor("white"), 1.4))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(option.rect.right() - 18, option.rect.center().y() - 4, 8, 8)
+            painter.restore()
 
 
 class EditorChoiceBox(QComboBox):
@@ -11,6 +29,7 @@ class EditorChoiceBox(QComboBox):
     def __init__(self) -> None:
         super().__init__()
         self.setProperty("selectionField", True)
+        self.setItemDelegate(EditorChoiceDelegate(self))
         self._chevron = QLabel("⌄", self)
         self._chevron.setObjectName("comboChevron")
         self._chevron.setStyleSheet(

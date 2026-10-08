@@ -27,6 +27,7 @@ from school_timetable_solver.service.project_services import (
     ExecuteProjectService,
     ImportProjectService,
 )
+from school_timetable_solver.validator.input_validators import ProjectDocumentValidator
 
 
 def test_document_round_trip_preserves_every_imported_domain_field(
@@ -37,7 +38,7 @@ def test_document_round_trip_preserves_every_imported_domain_field(
     project = CreateProjectService(store).execute(minimal_input_data.settings.timetable_name)
     doc = ImportProjectDocumentService().execute(minimal_input_data)
     copied = decode_project_document(encode_project_document(doc))
-    result = BuildProjectInputService().execute(copied, project)
+    result = BuildProjectInputService(ProjectDocumentValidator()).execute(copied, project)
     assert result.issues == ()
     assert result.input_data == minimal_input_data
 
@@ -55,7 +56,7 @@ def test_draft_saves_invalid_text_and_reopens_without_silent_repair(
     reopened = LocalProjectStoreAdapter(tmp_path).load_document(project.project_id)
     assert reopened is not None
     assert reopened.lesson_requirements[0].required_periods == "未定"
-    result = BuildProjectInputService().execute(reopened, project)
+    result = BuildProjectInputService(ProjectDocumentValidator()).execute(reopened, project)
     assert result.input_data is None
     assert result.issues[0].rule_id == "DOCUMENT_FIELD_FORMAT"
 
@@ -64,7 +65,9 @@ def test_stale_revision_does_not_overwrite_saved_document(tmp_path: Path) -> Non
     store = LocalProjectStoreAdapter(tmp_path)
     store.initialize()
     project = CreateProjectService(store).execute()
-    loader = LoadProjectDocumentService(store, CompatibleExcelInputReaderAdapter())
+    loader = LoadProjectDocumentService(
+        store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+    )
     first = loader.execute(project.project_id)
     stale = loader.execute(project.project_id)
     first.start_date = "2027-01-01"
@@ -102,9 +105,9 @@ def test_unsupported_schema_is_rejected_without_modifying_payload(tmp_path: Path
     store = LocalProjectStoreAdapter(tmp_path)
     store.initialize()
     project = CreateProjectService(store).execute()
-    doc = LoadProjectDocumentService(store, CompatibleExcelInputReaderAdapter()).execute(
-        project.project_id
-    )
+    doc = LoadProjectDocumentService(
+        store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+    ).execute(project.project_id)
     payload = json.loads(encode_project_document(doc))
     payload["document_schema_version"] = 999
     raw = json.dumps(payload)
@@ -124,7 +127,7 @@ def test_imported_project_generates_from_document_after_excel_is_removed(tmp_pat
     store.initialize()
     reader = CompatibleExcelInputReaderAdapter()
     imported = (
-        ImportProjectService(store, reader)
+        ImportProjectService(store, reader, ImportProjectDocumentService())
         .execute(Path("projects/sample/input/時間割入力_サンプル.xlsx"))
         .project
     )
@@ -137,8 +140,8 @@ def test_imported_project_generates_from_document_after_excel_is_removed(tmp_pat
     result = ExecuteProjectService(
         store,
         ApplicationComposition().create_generate_from_input_data_service(),
-        LoadProjectDocumentService(store, reader),
-        BuildProjectInputService(),
+        LoadProjectDocumentService(store, reader, ImportProjectDocumentService()),
+        BuildProjectInputService(ProjectDocumentValidator()),
         ExecutionLogAdapter(),
     ).execute(
         imported.project_id,
@@ -170,7 +173,7 @@ def test_legacy_import_migrates_once_and_metadata_stays_canonical(tmp_path: Path
     store.initialize()
     reader = CompatibleExcelInputReaderAdapter()
     project = (
-        ImportProjectService(store, reader)
+        ImportProjectService(store, reader, ImportProjectDocumentService())
         .execute(Path("projects/sample/input/時間割入力_サンプル.xlsx"))
         .project
     )
@@ -179,7 +182,7 @@ def test_legacy_import_migrates_once_and_metadata_stays_canonical(tmp_path: Path
         connection.execute(
             "DELETE FROM project_documents WHERE project_id=?", (project.project_id,)
         )
-    loader = LoadProjectDocumentService(store, reader)
+    loader = LoadProjectDocumentService(store, reader, ImportProjectDocumentService())
     migrated = loader.execute(project.project_id)
     assert migrated.revision == 1 and migrated.lesson_requirements
     project.imported_workbook_path.unlink()
@@ -190,7 +193,9 @@ def test_legacy_import_migrates_once_and_metadata_stays_canonical(tmp_path: Path
         project.project_id, "更新した名称", "更新した備考"
     )
     assert renamed is not None
-    data = BuildProjectInputService().execute(migrated, renamed).input_data
+    data = (
+        BuildProjectInputService(ProjectDocumentValidator()).execute(migrated, renamed).input_data
+    )
     assert data is not None and data.settings.timetable_name == "更新した名称"
     assert data.settings.description == "更新した備考"
     duplicate = DuplicateProjectService(store).execute(project.project_id)
@@ -212,8 +217,10 @@ def test_invalid_document_does_not_replace_existing_output(
     result = ExecuteProjectService(
         store,
         ApplicationComposition().create_generate_from_input_data_service(),
-        LoadProjectDocumentService(store, CompatibleExcelInputReaderAdapter()),
-        BuildProjectInputService(),
+        LoadProjectDocumentService(
+            store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+        ),
+        BuildProjectInputService(ProjectDocumentValidator()),
         ExecutionLogAdapter(),
     ).execute(
         project.project_id,

@@ -73,9 +73,15 @@ class CreateProjectService:
 
 
 class ImportProjectService:
-    def __init__(self, project_store: ProjectStore, input_reader: InputReader) -> None:
+    def __init__(
+        self,
+        project_store: ProjectStore,
+        input_reader: InputReader,
+        document_importer: ImportProjectDocumentService,
+    ) -> None:
         self._project_store = project_store
         self._input_reader = input_reader
+        self._document_importer = document_importer
 
     def execute(self, path: Path) -> ProjectImportResultModel:
         read_result = self._input_reader.read(path)
@@ -95,7 +101,7 @@ class ImportProjectService:
             created_at=now,
             updated_at=now,
         )
-        document = ImportProjectDocumentService().execute(read_result.input_data)
+        document = self._document_importer.execute(read_result.input_data)
         stored_project = self._project_store.create(project, path, document)
         return ProjectImportResultModel(stored_project, read_result.issues)
 

@@ -29,6 +29,7 @@ from school_timetable_solver.service.project_services import (
     ExecuteProjectService,
     ImportProjectService,
 )
+from school_timetable_solver.validator.input_validators import ProjectDocumentValidator
 
 
 class SuccessfulInputReader:
@@ -91,7 +92,9 @@ def test_import_project_uses_workbook_metadata_and_copies_file(tmp_path: Path) -
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
 
-    result = ImportProjectService(store, SuccessfulInputReader()).execute(source)
+    result = ImportProjectService(
+        store, SuccessfulInputReader(), ImportProjectDocumentService()
+    ).execute(source)
 
     assert result.project is not None
     assert result.project.name == "2026 夏期講習"
@@ -107,7 +110,9 @@ def test_import_project_does_not_save_invalid_workbook(tmp_path: Path) -> None:
     source = tmp_path / "invalid.xlsx"
     source.write_bytes(b"invalid")
 
-    result = ImportProjectService(store, FailedInputReader()).execute(source)
+    result = ImportProjectService(
+        store, FailedInputReader(), ImportProjectDocumentService()
+    ).execute(source)
 
     assert result.project is None
     assert result.issues[0].rule_id == "TEST_IMPORT_ERROR"
@@ -119,7 +124,11 @@ def test_duplicate_project_copies_imported_workbook(tmp_path: Path) -> None:
     store.initialize()
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
-    imported = ImportProjectService(store, SuccessfulInputReader()).execute(source).project
+    imported = (
+        ImportProjectService(store, SuccessfulInputReader(), ImportProjectDocumentService())
+        .execute(source)
+        .project
+    )
     assert imported is not None
 
     duplicate = DuplicateProjectService(store).execute(imported.project_id)
@@ -139,7 +148,11 @@ def test_execute_project_maps_gui_settings_to_generation_request(
     store.initialize()
     source = tmp_path / "input.xlsx"
     source.write_bytes(b"workbook")
-    project = ImportProjectService(store, SuccessfulInputReader()).execute(source).project
+    project = (
+        ImportProjectService(store, SuccessfulInputReader(), ImportProjectDocumentService())
+        .execute(source)
+        .project
+    )
     assert project is not None
     assert project.imported_workbook_path is not None
 
@@ -160,8 +173,10 @@ def test_execute_project_maps_gui_settings_to_generation_request(
     result = ExecuteProjectService(
         store,
         generator,
-        LoadProjectDocumentService(store, CompatibleExcelInputReaderAdapter()),
-        BuildProjectInputService(),
+        LoadProjectDocumentService(
+            store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+        ),
+        BuildProjectInputService(ProjectDocumentValidator()),
         execution_logger,
     ).execute(
         project.project_id,
@@ -189,8 +204,10 @@ def test_execute_blank_project_returns_input_issues_without_output(tmp_path: Pat
     result = ExecuteProjectService(
         store,
         ApplicationComposition().create_generate_from_input_data_service(),
-        LoadProjectDocumentService(store, CompatibleExcelInputReaderAdapter()),
-        BuildProjectInputService(),
+        LoadProjectDocumentService(
+            store, CompatibleExcelInputReaderAdapter(), ImportProjectDocumentService()
+        ),
+        BuildProjectInputService(ProjectDocumentValidator()),
         RecordingExecutionLogger(),
     ).execute(project.project_id, settings)
     assert result.exit_code == 2

@@ -255,10 +255,13 @@ class ImportProjectDocumentService:
 
 
 class BuildProjectInputService:
+    def __init__(self, validator: ProjectDocumentValidator) -> None:
+        self._validator = validator
+
     def execute(
         self, document: ProjectDocumentModel, project: ProjectModel
     ) -> InputReadResultModel:
-        issues = ProjectDocumentValidator().validate(document)
+        issues = self._validator.validate(document)
         if issues:
             return InputReadResultModel(None, tuple(issues))
         try:
@@ -504,9 +507,15 @@ def _optional_boolean(value: str) -> bool | None:
 class LoadProjectDocumentService:
     """Upgrade legacy Excel projects once; thereafter SQLite owns the draft."""
 
-    def __init__(self, project_store: ProjectStore, input_reader: InputReader) -> None:
+    def __init__(
+        self,
+        project_store: ProjectStore,
+        input_reader: InputReader,
+        importer: ImportProjectDocumentService,
+    ) -> None:
         self._project_store = project_store
         self._input_reader = input_reader
+        self._importer = importer
 
     def execute(self, project_id: str) -> ProjectDocumentModel:
         document = self._project_store.load_document(project_id)
@@ -522,7 +531,7 @@ class LoadProjectDocumentService:
                 issue.severity == "ERROR" for issue in result.issues
             ):
                 raise ValueError("元のExcelを読み込めません。保存データへの移行は行いません")
-            document = ImportProjectDocumentService().execute(result.input_data)
+            document = self._importer.execute(result.input_data)
         self._project_store.save_document(project_id, document)
         return document
 
