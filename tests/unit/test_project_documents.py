@@ -229,3 +229,69 @@ def test_invalid_document_does_not_replace_existing_output(
     assert result.exit_code == 2
     assert output.read_bytes() == b"previous result"
     assert any(issue.rule_id == "UNKNOWN_REFERENCE" for issue in result.validation_report.issues)
+
+
+def test_document_round_trip_preserves_advanced_rules_and_disabled_import_rows(
+    tmp_path: Path, minimal_input_data: InputDataModel
+) -> None:
+    from dataclasses import replace
+    from datetime import date
+
+    from school_timetable_solver.model.input_models import (
+        ClassPairOverlapRuleModel,
+        HomeroomBoundaryRuleModel,
+        LessonCountPreferenceRuleSegmentModel,
+        LessonCountRuleSegmentModel,
+        LessonRequirementModel,
+        TeacherDayOffRuleModel,
+        TeacherLeaveModel,
+    )
+    from school_timetable_solver.model.master_models import TeacherModel
+
+    first, last = date(2026, 7, 27), date(2026, 7, 28)
+    data = replace(
+        minimal_input_data,
+        teachers=(*minimal_input_data.teachers, TeacherModel("T3", "非表示の教師", "C1", False)),
+        lesson_requirements=(
+            *minimal_input_data.lesson_requirements,
+            LessonRequirementModel("DISABLED", "CL1", "S2", "T3", 1, None, False),
+        ),
+        teacher_leaves=(TeacherLeaveModel("T1", first, ("P1", "P2")),),
+        lesson_count_rule_segments=(
+            LessonCountRuleSegmentModel(
+                "HCOUNT", "SEG", "厳密配置", True, "CL1", "S1", 1, first, last, ("P1", "P2")
+            ),
+        ),
+        lesson_count_preference_rule_segments=(
+            LessonCountPreferenceRuleSegmentModel(
+                "PCOUNT", "PSEG", "希望配置", True, "CL1", "S1", 2, first, last, ("P1",)
+            ),
+        ),
+        teacher_day_off_rules=(
+            TeacherDayOffRuleModel("OFF", "T1", True, (first, last), None, 0, 2, "GROUP", 1, 1),
+        ),
+        homeroom_boundary_rules=(
+            HomeroomBoundaryRuleModel(
+                "HOMEROOM",
+                "担任授業",
+                True,
+                ("division", "grade"),
+                ("eq", "ge"),
+                ("junior_high", "3"),
+                first,
+                last,
+            ),
+        ),
+        class_pair_overlap_rules=(
+            ClassPairOverlapRuleModel("PAIR", "クラス組", False, "CL1", "CL2"),
+        ),
+    )
+    store = LocalProjectStoreAdapter(tmp_path)
+    store.initialize()
+    project = CreateProjectService(store).execute(data.settings.timetable_name)
+    document = decode_project_document(
+        encode_project_document(ImportProjectDocumentService().execute(data))
+    )
+    result = BuildProjectInputService(ProjectDocumentValidator()).execute(document, project)
+    assert result.issues == ()
+    assert result.input_data == data

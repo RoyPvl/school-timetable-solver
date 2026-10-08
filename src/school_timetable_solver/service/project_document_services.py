@@ -352,7 +352,7 @@ class BuildProjectInputService:
                         enabled=row.enabled,
                     )
                     for row in document.lesson_requirements
-                    if row.enabled
+                    if row.enabled or row.required_periods.strip() not in {"", "0"}
                 ),
                 teacher_leaves=tuple(
                     TeacherLeaveModel(
