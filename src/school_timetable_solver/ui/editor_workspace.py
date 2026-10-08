@@ -536,8 +536,8 @@ class SeasonalEditorWorkspace(QWidget):
         except ValueError:
             self.set_save_status("開始日と終了日を選んでください")
             return
-        if last < first or (last - first).days > 366:
-            self.set_save_status("期間は開始日以降の367日以内にしてください")
+        if last < first:
+            self.set_save_status("終了日は開始日以降にしてください")
             return
         existing = {row.target_date for row in self.document.calendar_days}
         for offset in range((last - first).days + 1):
