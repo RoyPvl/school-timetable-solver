@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import date, timedelta
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -105,6 +107,7 @@ class SeasonalEditorWorkspace(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.document = ProjectDocumentModel()
+        self._saved_document = deepcopy(self.document)
         self._current_project: ProjectModel | None = None
         self._section = EditorSection.SCHEDULE
         self._issues: tuple[ValidationIssueModel, ...] = ()
@@ -126,7 +129,6 @@ class SeasonalEditorWorkspace(QWidget):
         self._save_status = QLabel("保存済み")
         header_layout.addWidget(self._save_status)
         for label, signal in (
-            ("保存", self.save_requested),
             ("再読込", self.reload_requested),
             ("入力を確認", self.validate_requested),
             ("時間割を生成", self.run_requested),
@@ -166,11 +168,13 @@ class SeasonalEditorWorkspace(QWidget):
     def load_project(self, project: ProjectModel, document: ProjectDocumentModel) -> None:
         self._current_project = project
         self.document = document
+        self._saved_document = deepcopy(document)
         self._title.setText(project.name)
         self._issues = ()
         self._validation_status = "未検証"
         self._save_status.setText("保存済み")
-        self._select_section(EditorSection.SCHEDULE)
+        self._section = EditorSection.SCHEDULE
+        self._render_section()
 
     def set_save_status(self, status: str) -> None:
         self._save_status.setText(status)
@@ -178,14 +182,65 @@ class SeasonalEditorWorkspace(QWidget):
     def show_validation(self, issues: tuple[ValidationIssueModel, ...], status: str) -> None:
         self._issues = issues
         self._validation_status = status
-        self._select_section(EditorSection.REVIEW)
+        if self._section == EditorSection.REVIEW:
+            self._render_section()
+        else:
+            self._select_section(EditorSection.REVIEW)
+
+    @property
+    def has_unsaved_changes(self) -> bool:
+        return self.document != self._saved_document
+
+    def mark_saved(self) -> None:
+        self._saved_document = deepcopy(self.document)
+        self.set_save_status("保存済み")
+        self._update_save_buttons()
+
+    def discard_changes(self) -> None:
+        self.document = deepcopy(self._saved_document)
+        self._issues = ()
+        self._validation_status = "未検証"
+        self.set_save_status("保存済み")
+        self._render_section()
+
+    def confirm_discard_changes(self) -> bool:
+        if not self.has_unsaved_changes:
+            return True
+        dialog = QMessageBox(
+            QMessageBox.Icon.Question,
+            "未保存の変更",
+            "このページの変更は保存されていません。\n変更を破棄して続行しますか?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            self,
+        )
+        dialog.setObjectName("unsaved_changes_dialog")
+        dialog.button(QMessageBox.StandardButton.Yes).setText("はい")
+        dialog.button(QMessageBox.StandardButton.No).setText("いいえ")
+        dialog.setDefaultButton(QMessageBox.StandardButton.No)
+        dialog.setEscapeButton(QMessageBox.StandardButton.No)
+        answer = dialog.exec()
+        dialog.deleteLater()
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self.discard_changes()
+        return True
 
     def _mark_changed(self) -> None:
         self._issues = ()
         self._validation_status = "変更後は未検証"
-        self._save_status.setText("保存中…")
+        self._save_status.setText("未保存" if self.has_unsaved_changes else "保存済み")
+        self._update_save_buttons()
+
+    def _update_save_buttons(self) -> None:
+        self._page_save.setEnabled(self.has_unsaved_changes)
+        self._page_cancel.setEnabled(self.has_unsaved_changes)
 
     def _select_section(self, section: EditorSection) -> None:
+        if section == self._section:
+            return
+        if not self.confirm_discard_changes():
+            self._navigation_buttons[self._section].setChecked(True)
+            return
         self._section = section
         self._render_section()
 
@@ -220,7 +275,7 @@ class SeasonalEditorWorkspace(QWidget):
                     builder(tab_layout)
                 tabs.addTab(tab, title)
             tabs.setCurrentIndex(self._master_tab_index)
-            tabs.currentChanged.connect(self._remember_master_tab)
+            tabs.currentChanged.connect(lambda index: self._remember_master_tab(tabs, index))
             layout.addWidget(tabs)
         elif self._section == EditorSection.SCHEDULE:
             self._schedule(layout)
@@ -245,7 +300,7 @@ class SeasonalEditorWorkspace(QWidget):
                 builder(QVBoxLayout(tab))
                 tabs.addTab(tab, title)
             tabs.setCurrentIndex(self._rule_tab_index)
-            tabs.currentChanged.connect(self._remember_rule_tab)
+            tabs.currentChanged.connect(lambda index: self._remember_rule_tab(tabs, index))
             layout.addWidget(tabs)
         elif self._section == EditorSection.REVIEW:
             layout.addWidget(QLabel(self._validation_status))
@@ -265,13 +320,48 @@ class SeasonalEditorWorkspace(QWidget):
                     self._display(table, index, column, value)
         layout.addStretch(1)
         scroll.setWidget(content)
-        self._content_stack.addWidget(scroll)
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(scroll, 1)
+        footer = QFrame()
+        footer.setObjectName("pageActions")
+        actions = QHBoxLayout(footer)
+        actions.setContentsMargins(28, 12, 28, 16)
+        actions.addStretch(1)
+        self._page_cancel = QPushButton("キャンセル")
+        self._page_cancel.setObjectName("page_cancel")
+        self._page_cancel.clicked.connect(self.discard_changes)
+        actions.addWidget(self._page_cancel)
+        self._page_save = QPushButton("保存")
+        self._page_save.setObjectName("page_save")
+        self._page_save.clicked.connect(lambda _checked=False: self.save_requested.emit())
+        actions.addWidget(self._page_save)
+        page_layout.addWidget(footer)
+        self._update_save_buttons()
+        self._content_stack.addWidget(page)
 
-    def _remember_master_tab(self, index: int) -> None:
+    def _remember_master_tab(self, tabs: QTabWidget, index: int) -> None:
+        if index == self._master_tab_index:
+            return
+        if not self.confirm_discard_changes():
+            tabs.blockSignals(True)
+            tabs.setCurrentIndex(self._master_tab_index)
+            tabs.blockSignals(False)
+            return
         self._master_tab_index = index
+        self._render_section()
 
-    def _remember_rule_tab(self, index: int) -> None:
+    def _remember_rule_tab(self, tabs: QTabWidget, index: int) -> None:
+        if index == self._rule_tab_index:
+            return
+        if not self.confirm_discard_changes():
+            tabs.blockSignals(True)
+            tabs.setCurrentIndex(self._rule_tab_index)
+            tabs.blockSignals(False)
+            return
         self._rule_tab_index = index
+        self._render_section()
 
     def _table(
         self, layout: QVBoxLayout, name: str, headers: tuple[str, ...], count: int
