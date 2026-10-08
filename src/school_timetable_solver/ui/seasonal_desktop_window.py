@@ -30,7 +30,7 @@ from school_timetable_solver.ui.editor_workspace import SeasonalEditorWorkspace
 
 
 class SeasonalDesktopWindow(DesktopWindow):
-    """Save drafts independently of whether validation permits generation."""
+    """Persist explicitly saved page edits and guard draft abandonment."""
 
     def __init__(
         self,
@@ -48,7 +48,6 @@ class SeasonalDesktopWindow(DesktopWindow):
         self._load_document = load_document
         self._save_document = save_document
         self._current_project_id: str | None = None
-        self._dirty = False
         super().__init__(
             list_projects,
             load_project,
@@ -65,8 +64,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         editor = SeasonalEditorWorkspace()
         editor.setStyleSheet(DARK_EDITOR_STYLE)
         editor.back_requested.connect(self._show_home)
-        editor.document_changed.connect(self._autosave)
-        editor.save_requested.connect(self._autosave)
+        editor.save_requested.connect(self._save_current)
         editor.validate_requested.connect(self._validate_current)
         editor.run_requested.connect(self._run_current)
         editor.reload_requested.connect(self._reload_current)
@@ -78,7 +76,7 @@ class SeasonalDesktopWindow(DesktopWindow):
         self._open_project(self._create_project.execute().project_id)
 
     def _open_project(self, project_id: str) -> None:
-        if self._dirty and not self._autosave():
+        if not self._seasonal_editor().confirm_discard_changes():
             return
         project = self._load_project.execute(project_id)
         if project is None:
@@ -90,55 +88,49 @@ class SeasonalDesktopWindow(DesktopWindow):
             QMessageBox.warning(self, "読込エラー", str(exc))
             return
         self._current_project_id = project_id
-        self._dirty = False
         self._seasonal_editor().load_project(project, document)
         self._stack.setCurrentWidget(self._editor)
 
     def _reload_current(self) -> None:
-        if self._current_project_id is None:
-            return
-        if self._dirty:
-            answer = QMessageBox.question(
-                self,
-                "再読込",
-                "未保存の変更を破棄して再読込しますか?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        project_id = self._current_project_id
-        self._dirty = False
-        self._open_project(project_id)
+        if self._current_project_id is not None:
+            self._open_project(self._current_project_id)
 
-    def _autosave(self) -> bool:
+    def _save_current(self) -> bool:
         if self._current_project_id is None:
             return True
         editor = self._seasonal_editor()
-        self._dirty = True
+        if not editor.has_unsaved_changes:
+            return True
         try:
             self._save_document.execute(self._current_project_id, editor.document)
         except (ValueError, OSError, sqlite3.Error) as exc:
             editor.set_save_status(f"未保存: {exc}")
             return False
-        self._dirty = False
-        editor.set_save_status("保存済み")
+        editor.mark_saved()
         return True
 
     def _show_home(self) -> None:
-        if self._dirty and not self._autosave():
-            QMessageBox.warning(
-                self, "保存できません", "変更は未保存です。画面上の保存エラーを確認してください。"
-            )
+        if not self._seasonal_editor().confirm_discard_changes():
             return
         super()._show_home()
         self._current_project_id = None
 
+    def _ready_to_execute(self) -> bool:
+        if self._current_project_id is None:
+            return False
+        if self._seasonal_editor().has_unsaved_changes:
+            QMessageBox.warning(
+                self, "未保存の変更", "このページの変更を保存してから実行してください。"
+            )
+            return False
+        return True
+
     def _run_current(self) -> None:
-        if self._current_project_id is not None and self._autosave():
+        if self._ready_to_execute() and self._current_project_id is not None:
             self._run_existing_project(self._current_project_id)
 
     def _validate_current(self) -> None:
-        if self._current_project_id is None or not self._autosave():
+        if not self._ready_to_execute() or self._current_project_id is None:
             return
         settings = ProjectExecutionSettingsModel(
             Path.cwd() / "validation-only.xlsx", None, GenerationMode.VALIDATE_ONLY, 60.0, 1, 1
@@ -159,10 +151,7 @@ class SeasonalDesktopWindow(DesktopWindow):
             QMessageBox.information(self, "実行中", "実行が終わってから閉じてください。")
             event.ignore()
             return
-        if self._dirty and not self._autosave():
-            QMessageBox.warning(
-                self, "保存できません", "変更は未保存です。保存エラーを解消してから閉じてください。"
-            )
+        if not self._seasonal_editor().confirm_discard_changes():
             event.ignore()
             return
         super().closeEvent(event)
